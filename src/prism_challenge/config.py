@@ -30,9 +30,17 @@ class PrismSettings(ChallengeSettings):
     sequence_length: int = 128
     fineweb_sample_count: int = 128
     execution_backend: str = "local_cpu"
+    lium_backend: str = "jobs_api"
     lium_base_url: str | None = None
     lium_token: str | None = None
     lium_token_file: Path | None = None
+    lium_executor_id: str | None = None
+    lium_gpu_type: str | None = None
+    lium_gpu_count: int = 1
+    lium_template_id: str | None = None
+    lium_ssh_key_path: str | None = None
+    lium_keep_pod: bool = False
+    lium_pod_timeout_seconds: int = 600
     worker_claim_timeout_seconds: int = 900
     l2_top_k: int = 200
     l3_top_k: int = 20

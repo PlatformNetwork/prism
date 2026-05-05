@@ -16,6 +16,11 @@ dependencies = [
 
 [project.optional-dependencies]
 bittensor = ["bittensor>=9"]
+lium = [
+  "paramiko>=3.5.1",
+  "python-dotenv>=1.1.1",
+  "requests>=2.31"
+]
 dev = [
   "pytest>=8",
   "pytest-asyncio>=0.23",

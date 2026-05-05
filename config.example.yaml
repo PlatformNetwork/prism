@@ -7,5 +7,12 @@ epoch_seconds: 21600
 fineweb_sample_count: 128
 sequence_length: 128
 max_parameters: 150000000
+execution_backend: remote_provider
+lium_backend: sdk
 lium_base_url: null
 lium_token_file: /run/secrets/lium_token
+lium_gpu_count: 1
+lium_gpu_type: null
+lium_ssh_key_path: null
+lium_keep_pod: false
+lium_pod_timeout_seconds: 600
