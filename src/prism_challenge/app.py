@@ -33,6 +33,8 @@ def create_app(app_settings: PrismSettings = settings) -> FastAPI:
         ssh_key_path=app_settings.lium_ssh_key_path,
         keep_pod=app_settings.lium_keep_pod,
         pod_timeout_seconds=app_settings.lium_pod_timeout_seconds,
+        eval_timeout_seconds=app_settings.lium_eval_timeout_seconds,
+        allow_fake=app_settings.allow_fake_lium,
     )
     worker = PrismWorker(
         repository,

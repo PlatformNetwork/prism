@@ -35,6 +35,7 @@ def test_remote_provider_worker_does_not_execute_submission_code(tmp_path):
         shared_token="secret",
         allow_insecure_signatures=True,
         execution_backend="remote_provider",
+        allow_fake_lium=True,
     )
     with TestClient(create_app(settings)) as client:
         submission_id = _submit(client, REMOTE_ONLY_CODE)

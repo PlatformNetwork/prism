@@ -5,6 +5,7 @@ import base64
 import json
 import os
 import tempfile
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,8 @@ class LiumClient:
         ssh_key_path: str | None = None,
         keep_pod: bool = False,
         pod_timeout_seconds: int = 600,
+        eval_timeout_seconds: int = 900,
+        allow_fake: bool = False,
         sdk_factory: Any | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/") if base_url else None
@@ -47,6 +50,8 @@ class LiumClient:
         self.ssh_key_path = ssh_key_path
         self.keep_pod = keep_pod
         self.pod_timeout_seconds = pod_timeout_seconds
+        self.eval_timeout_seconds = eval_timeout_seconds
+        self.allow_fake = allow_fake
         self.sdk_factory = sdk_factory
 
     def enabled(self) -> bool:
@@ -56,6 +61,8 @@ class LiumClient:
 
     async def submit_job(self, payload: dict[str, Any], *, idempotency_key: str) -> LiumJob:
         if not self.enabled():
+            if not self.allow_fake:
+                raise RuntimeError("Lium backend is not configured")
             q = float(payload.get("q_train", payload.get("q_arch", 0.42)))
             return LiumJob(
                 f"fake-{idempotency_key}",
@@ -110,7 +117,8 @@ class LiumClient:
             return LiumJob(str(pod.id), "completed", metrics)
         finally:
             if not self.keep_pod:
-                lium.rm(pod)
+                with suppress(Exception):
+                    lium.rm(pod)
 
     def _sdk_client(self) -> Any:
         if self.sdk_factory is not None:
@@ -151,7 +159,10 @@ class LiumClient:
 
     def _remote_eval_command(self, payload: dict[str, Any]) -> str:
         encoded = base64.b64encode(json.dumps(payload).encode()).decode()
-        return f"python3 - '{encoded}' <<'PY'\n{_REMOTE_EVAL_SCRIPT}\nPY\n"
+        return (
+            f"timeout {self.eval_timeout_seconds}s python3 - '{encoded}' <<'PY'\n"
+            f"{_REMOTE_EVAL_SCRIPT}\nPY\n"
+        )
 
     def _prepare_remote_eval(self, lium: Any, pod: Any, payload: dict[str, Any]) -> str:
         if not hasattr(lium, "upload"):
@@ -165,7 +176,7 @@ class LiumClient:
             remote_runner = f"/tmp/prism_eval_{os.getpid()}.py"
             lium.upload(pod, local=str(payload_path), remote=remote_payload)
             lium.upload(pod, local=str(runner_path), remote=remote_runner)
-        return f"python3 {remote_runner} {remote_payload}"
+        return f"timeout {self.eval_timeout_seconds}s python3 {remote_runner} {remote_payload}"
 
     def _parse_metrics(self, stdout: str) -> dict[str, float]:
         for line in reversed(stdout.splitlines()):

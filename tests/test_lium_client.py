@@ -87,5 +87,5 @@ async def test_lium_sdk_adapter_rents_executes_and_cleans_up() -> None:
     assert job.status == "completed"
     assert job.metrics == {"q_arch": 0.73, "q_recipe": 0.9}
     assert fake.removed
-    assert fake.command.startswith("python3 /tmp/prism_eval_")
+    assert fake.command.startswith("timeout 900s python3 /tmp/prism_eval_")
     assert len(fake.uploads) == 2

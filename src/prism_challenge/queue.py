@@ -26,6 +26,8 @@ class PrismWorker:
         *,
         execution_backend: str = "local_cpu",
     ) -> None:
+        if execution_backend not in {"local_cpu", "remote_provider"}:
+            raise ValueError(f"Unsupported execution backend: {execution_backend}")
         self.repository = repository
         self.ctx = ctx
         self.lium = lium

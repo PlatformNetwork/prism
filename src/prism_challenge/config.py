@@ -41,6 +41,8 @@ class PrismSettings(ChallengeSettings):
     lium_ssh_key_path: str | None = None
     lium_keep_pod: bool = False
     lium_pod_timeout_seconds: int = 600
+    lium_eval_timeout_seconds: int = 900
+    allow_fake_lium: bool = False
     worker_claim_timeout_seconds: int = 900
     l2_top_k: int = 200
     l3_top_k: int = 20
@@ -53,7 +55,7 @@ class PrismSettings(ChallengeSettings):
             return self.shared_token
         if self.shared_token_file and Path(self.shared_token_file).exists():
             return Path(self.shared_token_file).read_text(encoding="utf-8").strip()
-        return "dev-prism-token"
+        raise RuntimeError("PRISM_SHARED_TOKEN or PRISM_SHARED_TOKEN_FILE is required")
 
     @property
     def resolved_database_path(self) -> Path:
