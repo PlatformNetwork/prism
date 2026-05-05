@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -99,7 +100,7 @@ class LiumClient:
         if pod is None:
             raise RuntimeError("Lium pod did not become ready before timeout")
         try:
-            command = self._remote_eval_command(payload)
+            command = self._prepare_remote_eval(lium, pod, payload)
             result = lium.exec(pod, command=command)
             if not result.get("success"):
                 raise RuntimeError(
@@ -152,6 +153,20 @@ class LiumClient:
         encoded = base64.b64encode(json.dumps(payload).encode()).decode()
         return f"python3 - '{encoded}' <<'PY'\n{_REMOTE_EVAL_SCRIPT}\nPY\n"
 
+    def _prepare_remote_eval(self, lium: Any, pod: Any, payload: dict[str, Any]) -> str:
+        if not hasattr(lium, "upload"):
+            return self._remote_eval_command(payload)
+        with tempfile.TemporaryDirectory(prefix="prism-lium-") as tmp:
+            payload_path = Path(tmp) / "payload.json"
+            runner_path = Path(tmp) / "runner.py"
+            payload_path.write_text(json.dumps(payload), encoding="utf-8")
+            runner_path.write_text(_REMOTE_EVAL_SCRIPT, encoding="utf-8")
+            remote_payload = f"/tmp/prism_payload_{os.getpid()}.json"
+            remote_runner = f"/tmp/prism_eval_{os.getpid()}.py"
+            lium.upload(pod, local=str(payload_path), remote=remote_payload)
+            lium.upload(pod, local=str(runner_path), remote=remote_runner)
+        return f"python3 {remote_runner} {remote_payload}"
+
     def _parse_metrics(self, stdout: str) -> dict[str, float]:
         for line in reversed(stdout.splitlines()):
             if line.startswith("PRISM_METRICS_JSON="):
@@ -168,7 +183,11 @@ import math
 import sys
 import types
 
-payload = json.loads(base64.b64decode(sys.argv[1]).decode())
+if len(sys.argv) > 1 and sys.argv[1].endswith(".json"):
+    with open(sys.argv[1], encoding="utf-8") as f:
+        payload = json.load(f)
+else:
+    payload = json.loads(base64.b64decode(sys.argv[1]).decode())
 
 interface = types.ModuleType("prism_challenge.evaluator.interface")
 

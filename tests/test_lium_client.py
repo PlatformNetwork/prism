@@ -20,6 +20,7 @@ class FakeLiumSdk:
     def __init__(self) -> None:
         self.removed = False
         self.command = ""
+        self.uploads: list[tuple[str, str]] = []
 
     def ls(self, *, gpu_type: str | None, gpu_count: int) -> list[FakeExecutor]:
         assert gpu_type == "T4"
@@ -59,6 +60,10 @@ class FakeLiumSdk:
         assert pod.id == "pod-1"
         self.removed = True
 
+    def upload(self, pod: FakePod, *, local: str, remote: str) -> None:
+        assert pod.id == "pod-1"
+        self.uploads.append((local, remote))
+
 
 async def test_lium_sdk_adapter_rents_executes_and_cleans_up() -> None:
     fake = FakeLiumSdk()
@@ -82,4 +87,5 @@ async def test_lium_sdk_adapter_rents_executes_and_cleans_up() -> None:
     assert job.status == "completed"
     assert job.metrics == {"q_arch": 0.73, "q_recipe": 0.9}
     assert fake.removed
-    assert "PRISM_METRICS_JSON" in fake.command
+    assert fake.command.startswith("python3 /tmp/prism_eval_")
+    assert len(fake.uploads) == 2

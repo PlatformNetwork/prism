@@ -16,3 +16,4 @@ lium_gpu_type: null
 lium_ssh_key_path: null
 lium_keep_pod: false
 lium_pod_timeout_seconds: 600
+worker_claim_timeout_seconds: 900
