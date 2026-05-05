@@ -6,5 +6,6 @@ shared_token_file: /run/secrets/prism_internal_token
 epoch_seconds: 21600
 fineweb_sample_count: 128
 sequence_length: 128
+max_parameters: 150000000
 lium_base_url: null
 lium_token_file: /run/secrets/lium_token

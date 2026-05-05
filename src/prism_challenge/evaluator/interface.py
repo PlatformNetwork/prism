@@ -9,7 +9,7 @@ class PrismContext:
     vocab_size: int = 4096
     sequence_length: int = 128
     max_layers: int = 96
-    max_parameters: int = 50_000_000
+    max_parameters: int = 150_000_000
     seed: int = 1337
 
 

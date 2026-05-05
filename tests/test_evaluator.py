@@ -73,3 +73,21 @@ def test_anti_cheat_similarity_and_diversity():
     result = evaluate_anti_cheat(VALID_CODE, [VALID_CODE])
     assert result.multiplier < 1
     assert result.findings
+
+
+def test_novelty_bonus_is_quality_gated():
+    weak_novel = final_score(
+        q_arch=0.05,
+        q_recipe=1.0,
+        anti_cheat_multiplier=1.0,
+        diversity_bonus=0.05,
+        penalty=0.0,
+    )
+    stronger_old = final_score(
+        q_arch=0.12,
+        q_recipe=1.0,
+        anti_cheat_multiplier=1.0,
+        diversity_bonus=0.0,
+        penalty=0.0,
+    )
+    assert stronger_old.final_score > weak_novel.final_score

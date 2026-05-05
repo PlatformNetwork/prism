@@ -30,5 +30,7 @@ def final_score(
     recipe_weight: float = 0.3,
 ) -> ScoreResult:
     base = arch_weight * q_arch + recipe_weight * q_recipe
-    score = max(0.0, base * anti_cheat_multiplier + diversity_bonus - penalty)
+    novelty_gate = max(0.0, min(1.0, q_arch / 0.5))
+    effective_diversity_bonus = diversity_bonus * novelty_gate
+    score = max(0.0, base * anti_cheat_multiplier + effective_diversity_bonus - penalty)
     return ScoreResult(q_arch, q_recipe, score)

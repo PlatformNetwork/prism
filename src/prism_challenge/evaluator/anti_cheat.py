@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 from dataclasses import dataclass
 
 from .sandbox import inspect_code
@@ -21,13 +20,11 @@ class AntiCheatResult:
 
 
 def ast_similarity(left: str, right: str) -> float:
-    left_nodes = [type(node).__name__ for node in ast.walk(ast.parse(left))]
-    right_nodes = [type(node).__name__ for node in ast.walk(ast.parse(right))]
-    if not left_nodes or not right_nodes:
+    left_fingerprint = inspect_code(left).ast_fingerprint
+    right_fingerprint = inspect_code(right).ast_fingerprint
+    if not left_fingerprint or not right_fingerprint:
         return 0.0
-    left_set = set(left_nodes)
-    right_set = set(right_nodes)
-    return len(left_set & right_set) / len(left_set | right_set)
+    return len(left_fingerprint & right_fingerprint) / len(left_fingerprint | right_fingerprint)
 
 
 def jaccard_distance(left: set[str], right: set[str]) -> float:

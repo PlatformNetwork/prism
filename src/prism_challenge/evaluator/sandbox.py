@@ -45,6 +45,10 @@ def inspect_code(code: str) -> SandboxReport:
     fingerprint: set[str] = set()
     for node in ast.walk(tree):
         fingerprint.add(type(node).__name__)
+        if isinstance(node, ast.ClassDef):
+            fingerprint.add(f"class_base:{','.join(_node_name(base) for base in node.bases)}")
+        elif isinstance(node, ast.FunctionDef):
+            fingerprint.add(f"function:{node.name}")
         if isinstance(node, ast.Import):
             for alias in node.names:
                 imports.add(alias.name.split(".", 1)[0])
@@ -54,6 +58,9 @@ def inspect_code(code: str) -> SandboxReport:
         elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
             if node.func.id in FORBIDDEN_CALLS:
                 raise SandboxViolation(f"forbidden call: {node.func.id}")
+            fingerprint.add(f"call:{node.func.id}")
+        elif isinstance(node, ast.Call):
+            fingerprint.add(f"call:{_node_name(node.func)}")
     blocked = imports - ALLOWED_IMPORT_ROOTS
     if blocked:
         raise SandboxViolation(f"forbidden imports: {', '.join(sorted(blocked))}")
@@ -63,6 +70,17 @@ def inspect_code(code: str) -> SandboxReport:
     if missing:
         raise SandboxViolation(f"missing functions: {', '.join(sorted(missing))}")
     return SandboxReport(tree=tree, ast_fingerprint=fingerprint, imports=imports)
+
+
+def _node_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        prefix = _node_name(node.value)
+        return f"{prefix}.{node.attr}" if prefix else node.attr
+    if isinstance(node, ast.Subscript):
+        return _node_name(node.value)
+    return type(node).__name__
 
 
 def _safe_import(

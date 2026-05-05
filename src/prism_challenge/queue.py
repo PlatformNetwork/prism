@@ -248,11 +248,13 @@ class PrismWorker:
                 continue
             report = inspect_code(str(row["code"]))
             arch_hash = sha256(":".join(sorted(report.ast_fingerprint)).encode()).hexdigest()
+            previous = await self.repository.previous_codes(str(row["submission_id"]))
+            anti = evaluate_anti_cheat(str(row["code"]), previous)
             await self._finalize_remote_result(
                 submission_id=str(row["submission_id"]),
                 arch_hash=arch_hash,
-                anti_multiplier=1.0,
-                diversity_bonus=0.0,
+                anti_multiplier=anti.multiplier,
+                diversity_bonus=anti.diversity_bonus,
                 metrics=job.metrics,
             )
             completed.append(str(row["submission_id"]))
