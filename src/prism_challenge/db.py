@@ -31,6 +31,20 @@ SCHEMA = (
     "CREATE TABLE IF NOT EXISTS cheat_findings ("
     "id TEXT PRIMARY KEY, submission_id TEXT NOT NULL, kind TEXT NOT NULL,"
     "severity REAL NOT NULL, details TEXT NOT NULL, created_at TEXT NOT NULL);"
+    "CREATE TABLE IF NOT EXISTS submission_sources ("
+    "submission_id TEXT PRIMARY KEY, hotkey TEXT NOT NULL, code_hash TEXT NOT NULL,"
+    "files TEXT NOT NULL, ast_features TEXT NOT NULL, token_shingles TEXT NOT NULL,"
+    "fingerprint TEXT NOT NULL, created_at TEXT NOT NULL);"
+    "CREATE INDEX IF NOT EXISTS idx_submission_sources_hotkey "
+    "ON submission_sources(hotkey, created_at);"
+    "CREATE TABLE IF NOT EXISTS plagiarism_reviews ("
+    "submission_id TEXT PRIMARY KEY, candidate_submission_id TEXT, similarity REAL NOT NULL,"
+    "verdict INTEGER NOT NULL, reason TEXT NOT NULL, violations TEXT NOT NULL,"
+    "report TEXT NOT NULL, created_at TEXT NOT NULL);"
+    "CREATE TABLE IF NOT EXISTS llm_reviews ("
+    "submission_id TEXT PRIMARY KEY, approved INTEGER NOT NULL, reason TEXT NOT NULL,"
+    "violations TEXT NOT NULL, confidence REAL NOT NULL, raw TEXT NOT NULL,"
+    "created_at TEXT NOT NULL);"
     "CREATE TABLE IF NOT EXISTS nonces ("
     "hotkey TEXT NOT NULL, nonce TEXT NOT NULL, created_at TEXT NOT NULL,"
     "PRIMARY KEY (hotkey, nonce));"
@@ -62,12 +76,11 @@ class Database:
             await conn.close()
 
 
-def dumps(data: dict[str, Any]) -> str:
+def dumps(data: Any) -> str:
     return json.dumps(data, sort_keys=True, separators=(",", ":"))
 
 
-def loads(data: str | None) -> dict[str, Any]:
+def loads(data: str | None) -> Any:
     if not data:
         return {}
-    value = json.loads(data)
-    return value if isinstance(value, dict) else {}
+    return json.loads(data)

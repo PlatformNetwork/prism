@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import base64
+import io
+import zipfile
+from types import SimpleNamespace
+
 import pytest
 from conftest import VALID_CODE
 
+from prism_challenge.evaluator import llm_review, source_similarity
 from prism_challenge.evaluator.anti_cheat import ast_similarity, evaluate_anti_cheat
 from prism_challenge.evaluator.bench_config import BenchConfig
 from prism_challenge.evaluator.interface import PrismContext, TrainingRecipe
@@ -73,6 +79,55 @@ def test_anti_cheat_similarity_and_diversity():
     result = evaluate_anti_cheat(VALID_CODE, [VALID_CODE])
     assert result.multiplier < 1
     assert result.findings
+
+
+def test_prism_chutes_tool_call_review(monkeypatch):
+    class FakeChat:
+        def __init__(self, **kwargs):
+            assert kwargs["model"] == "model"
+
+        def bind_tools(self, tools, strict=False):
+            assert strict is True
+            assert list(tools[0].model_fields)[:2] == ["reason", "verdict"]
+            return self
+
+        def invoke(self, _messages):
+            return SimpleNamespace(
+                tool_calls=[
+                    {
+                        "name": "SubmitVerdict",
+                        "args": {
+                            "reason": "valid Prism model",
+                            "verdict": True,
+                            "confidence": 0.8,
+                        },
+                    }
+                ]
+            )
+
+    monkeypatch.setattr(llm_review, "_load_chat_openai", lambda: FakeChat)
+    result = llm_review.review_code(
+        VALID_CODE,
+        config=llm_review.LlmReviewConfig(enabled=True, model="model", api_key="key"),
+    )
+    assert result.approved
+    assert result.reason == "valid Prism model"
+
+
+def test_prism_zip_snapshot_similarity():
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr("model.py", VALID_CODE)
+    encoded = base64.b64encode(stream.getvalue()).decode("ascii")
+    snapshot = source_similarity.snapshot_from_submission(encoded, "model.zip")
+    assert source_similarity.primary_python_code(snapshot).strip().startswith("import torch")
+    candidate = source_similarity.snapshot_from_submission(VALID_CODE, "model.py")
+    ranked = source_similarity.rank_similar(
+        snapshot,
+        [{"submission_id": "old", "hotkey": "hk", **candidate.to_payload()}],
+        min_similarity=0.1,
+    )
+    assert ranked and ranked[0].submission_id == "old"
 
 
 def test_novelty_bonus_is_quality_gated():

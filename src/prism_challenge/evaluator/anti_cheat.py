@@ -20,8 +20,11 @@ class AntiCheatResult:
 
 
 def ast_similarity(left: str, right: str) -> float:
-    left_fingerprint = inspect_code(left).ast_fingerprint
-    right_fingerprint = inspect_code(right).ast_fingerprint
+    try:
+        left_fingerprint = inspect_code(left).ast_fingerprint
+        right_fingerprint = inspect_code(right).ast_fingerprint
+    except Exception:
+        return 0.0
     if not left_fingerprint or not right_fingerprint:
         return 0.0
     return len(left_fingerprint & right_fingerprint) / len(left_fingerprint | right_fingerprint)
@@ -41,7 +44,10 @@ def evaluate_anti_cheat(code: str, previous_codes: list[str]) -> AntiCheatResult
     for previous in previous_codes:
         similarity = ast_similarity(code, previous)
         max_similarity = max(max_similarity, similarity)
-        previous_report = inspect_code(previous)
+        try:
+            previous_report = inspect_code(previous)
+        except Exception:
+            continue
         distances.append(jaccard_distance(report.ast_fingerprint, previous_report.ast_fingerprint))
     if max_similarity >= 0.96:
         findings.append(CheatFinding("ast_similarity", 0.8, "near-duplicate submission"))

@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
 from hashlib import sha256
+from pathlib import Path
+from typing import Any, cast
 from uuid import uuid4
 
-from .db import dumps
+from .config import PrismSettings
+from .db import dumps, loads
+from .evaluator import llm_review, source_similarity
 from .evaluator.anti_cheat import evaluate_anti_cheat
 from .evaluator.interface import PrismContext
 from .evaluator.l1_syntax import validate_l1
@@ -11,10 +17,26 @@ from .evaluator.l2_proxy import score_l2
 from .evaluator.l3_train import score_l3
 from .evaluator.l4_benchmark import score_l4
 from .evaluator.lium_client import LiumClient, LiumJob
+from .evaluator.review_rules import ReviewRule, load_review_rules
 from .evaluator.sandbox import inspect_code, load_submission_contract
 from .evaluator.scoring import final_score, score_recipe
 from .models import SubmissionStatus
 from .repository import PrismRepository, now_iso
+from .sdk.executors.docker import DockerExecutor, DockerLimits, DockerMount, DockerRunSpec
+
+DEFAULT_REVIEW_RULES = (
+    ReviewRule("prism:no-secret-exfiltration", "Do not read, infer, print, or transmit secrets."),
+    ReviewRule("prism:no-escape", "Do not use filesystem, process, or network escapes."),
+    ReviewRule("prism:model-contract", "Only implement the Prism model and recipe contract."),
+)
+
+
+@dataclass(frozen=True)
+class StaticReviewOutcome:
+    code: str
+    rejected: bool
+    reason: str | None = None
+    violations: tuple[str, ...] = ()
 
 
 class PrismWorker:
@@ -25,6 +47,7 @@ class PrismWorker:
         lium: LiumClient,
         *,
         execution_backend: str = "local_cpu",
+        settings: PrismSettings | None = None,
     ) -> None:
         if execution_backend not in {"local_cpu", "remote_provider"}:
             raise ValueError(f"Unsupported execution backend: {execution_backend}")
@@ -32,6 +55,7 @@ class PrismWorker:
         self.ctx = ctx
         self.lium = lium
         self.execution_backend = execution_backend
+        self.settings = settings or PrismSettings()
 
     async def process_next(self) -> str | None:
         submission = await self.repository.claim_next()
@@ -39,11 +63,38 @@ class PrismWorker:
             return None
         submission_id = str(submission["id"])
         code = str(submission["code"])
+        filename = str(submission.get("filename") or "model.py")
+        raw_metadata = submission.get("metadata")
+        metadata = cast(dict[str, Any], raw_metadata) if isinstance(raw_metadata, dict) else {}
+        hotkey = str(submission.get("hotkey") or "")
+        code_hash = str(submission.get("code_hash") or sha256(code.encode()).hexdigest())
         if self.execution_backend == "remote_provider":
-            return await self._submit_remote(submission_id, code)
-        return await self._process_local(submission_id, code)
+            return await self._submit_remote(
+                submission_id, code, filename, metadata, hotkey, code_hash
+            )
+        return await self._process_local(submission_id, code, filename, metadata, hotkey, code_hash)
 
-    async def _process_local(self, submission_id: str, code: str) -> str:
+    async def _process_local(
+        self,
+        submission_id: str,
+        code: str,
+        filename: str,
+        metadata: dict[str, Any],
+        hotkey: str,
+        code_hash: str,
+    ) -> str:
+        review = await self._review_static_submission(
+            submission_id=submission_id,
+            code=code,
+            filename=filename,
+            metadata=metadata,
+            hotkey=hotkey,
+            code_hash=code_hash,
+        )
+        if review.rejected:
+            await self._reject_submission(submission_id, review.reason or "review rejected")
+            return submission_id
+        code = review.code
         async with self.repository.database.connect() as conn:
             try:
                 l1 = validate_l1(code, self.ctx)
@@ -118,8 +169,28 @@ class PrismWorker:
                 )
                 return submission_id
 
-    async def _submit_remote(self, submission_id: str, code: str) -> str:
+    async def _submit_remote(
+        self,
+        submission_id: str,
+        code: str,
+        filename: str,
+        metadata: dict[str, Any],
+        hotkey: str,
+        code_hash: str,
+    ) -> str:
         try:
+            review = await self._review_static_submission(
+                submission_id=submission_id,
+                code=code,
+                filename=filename,
+                metadata=metadata,
+                hotkey=hotkey,
+                code_hash=code_hash,
+            )
+            if review.rejected:
+                await self._reject_submission(submission_id, review.reason or "review rejected")
+                return submission_id
+            code = review.code
             report = inspect_code(code)
             code_hash = sha256(code.encode()).hexdigest()
             arch_basis = ":".join(sorted(report.ast_fingerprint))
@@ -167,6 +238,171 @@ class PrismWorker:
                     (SubmissionStatus.REJECTED.value, str(exc), now_iso(), submission_id),
                 )
             return submission_id
+
+    async def _review_static_submission(
+        self,
+        *,
+        submission_id: str,
+        code: str,
+        filename: str,
+        metadata: dict[str, Any],
+        hotkey: str,
+        code_hash: str,
+    ) -> StaticReviewOutcome:
+        snapshot = source_similarity.snapshot_from_submission(
+            code,
+            filename,
+            metadata,
+            max_files=self.settings.plagiarism_storage_max_files,
+            max_bytes=self.settings.plagiarism_storage_max_bytes,
+        )
+        code_for_eval = source_similarity.primary_python_code(snapshot)
+        if not code_for_eval.strip():
+            return StaticReviewOutcome(code_for_eval, True, "submission contains no Python source")
+        await self.repository.store_source_snapshot(
+            submission_id=submission_id,
+            hotkey=hotkey,
+            code_hash=code_hash,
+            payload=snapshot.to_payload(),
+        )
+        rules = self._review_rules()
+        llm_config = self._llm_config()
+        safety = await asyncio.to_thread(
+            llm_review.review_code,
+            code_for_eval,
+            config=llm_config,
+            rules=rules,
+            subject="Prism model",
+        )
+        await self.repository.store_llm_review(
+            submission_id=submission_id,
+            approved=safety.approved,
+            reason=safety.reason,
+            violations=safety.violations,
+            confidence=safety.confidence,
+            raw=safety.raw,
+        )
+        if not safety.approved:
+            return StaticReviewOutcome(code_for_eval, True, safety.reason, tuple(safety.violations))
+        if not self.settings.plagiarism_enabled:
+            return StaticReviewOutcome(code_for_eval, False)
+        history = await self.repository.source_snapshots(exclude_submission_id=submission_id)
+        candidates = source_similarity.rank_similar(
+            snapshot,
+            history,
+            top_k=self.settings.plagiarism_top_k,
+            min_similarity=self.settings.plagiarism_min_similarity,
+        )
+        if not candidates:
+            return StaticReviewOutcome(code_for_eval, False)
+        candidate = candidates[0]
+        runner = (
+            self._pair_sandbox_runner(submission_id)
+            if self.settings.plagiarism_sandbox_enabled
+            else None
+        )
+        report = await asyncio.to_thread(
+            source_similarity.run_pair_sandbox,
+            snapshot,
+            candidate.snapshot,
+            runner=runner,
+        )
+        plagiarism = await asyncio.to_thread(
+            llm_review.review_plagiarism,
+            current_code=code_for_eval,
+            candidate_code=candidate.snapshot.combined_python(),
+            comparison_report={"candidate": candidate.summary(), **report},
+            config=llm_config,
+            rules=rules,
+        )
+        copied = (
+            candidate.score >= self.settings.plagiarism_static_reject_threshold or plagiarism.copied
+        )
+        violations = plagiarism.violations if copied else []
+        if copied and not violations:
+            violations = ["plagiarism_similarity"]
+        reason = plagiarism.reason if plagiarism.copied else "static similarity review"
+        await self.repository.store_plagiarism_review(
+            submission_id=submission_id,
+            candidate_submission_id=candidate.submission_id,
+            similarity=candidate.score,
+            verdict=copied,
+            reason=reason,
+            violations=violations,
+            report={"candidate": candidate.summary(), **report, "llm": plagiarism.raw},
+        )
+        if copied:
+            return StaticReviewOutcome(code_for_eval, True, reason, tuple(violations))
+        return StaticReviewOutcome(code_for_eval, False)
+
+    async def _reject_submission(self, submission_id: str, reason: str) -> None:
+        async with self.repository.database.connect() as conn:
+            await conn.execute(
+                "UPDATE submissions SET status=?, error=?, updated_at=? WHERE id=?",
+                (SubmissionStatus.REJECTED.value, reason, now_iso(), submission_id),
+            )
+
+    def _review_rules(self) -> tuple[ReviewRule, ...]:
+        return load_review_rules(
+            defaults=DEFAULT_REVIEW_RULES,
+            rules_json=self.settings.subnet_rules_json,
+            rules_file=self.settings.subnet_rules_file,
+        )
+
+    def _llm_config(self) -> llm_review.LlmReviewConfig:
+        return llm_review.LlmReviewConfig(
+            enabled=self.settings.llm_review_enabled,
+            required=self.settings.llm_review_required,
+            base_url=self.settings.chutes_base_url,
+            model=self.settings.chutes_model,
+            api_key=self.settings.chutes_api_key_value(),
+            api_key_file=self.settings.chutes_api_key_file,
+            timeout_seconds=self.settings.llm_review_timeout_seconds,
+            temperature=self.settings.llm_review_temperature,
+            max_tokens=self.settings.llm_review_max_tokens,
+            max_retries=self.settings.llm_review_max_retries,
+        )
+
+    def _pair_sandbox_runner(self, submission_id: str) -> source_similarity.SandboxRunner:
+        executor = DockerExecutor(
+            challenge=self.settings.slug,
+            docker_bin=self.settings.docker_bin,
+            allowed_images=(self.settings.plagiarism_sandbox_image,),
+            backend=self.settings.docker_backend,
+            broker_url=self.settings.docker_broker_url,
+            broker_token=self.settings.docker_broker_token,
+            broker_token_file=str(self.settings.docker_broker_token_file)
+            if self.settings.docker_broker_token_file
+            else None,
+        )
+
+        def run(left: Path, right: Path, script: Path) -> str:
+            result = executor.run(
+                DockerRunSpec(
+                    image=self.settings.plagiarism_sandbox_image,
+                    command=("python", "/compare.py"),
+                    mounts=(
+                        DockerMount(left, "/current"),
+                        DockerMount(right, "/candidate"),
+                        DockerMount(script, "/compare.py"),
+                    ),
+                    labels={"platform.job": submission_id, "platform.task": "plagiarism"},
+                    limits=DockerLimits(
+                        cpus=min(self.settings.docker_cpus, 1.0),
+                        memory="512m",
+                        memory_swap="512m",
+                        pids_limit=128,
+                        network="none",
+                        read_only=True,
+                    ),
+                ),
+                self.settings.plagiarism_sandbox_timeout_seconds,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr or result.stdout or "pair sandbox failed")
+            return result.stdout
+
+        return run
 
     async def _record_remote_job(self, submission_id: str, job: LiumJob) -> None:
         status = (
@@ -238,8 +474,8 @@ class PrismWorker:
         completed: list[str] = []
         async with self.repository.database.connect() as conn:
             rows = await conn.execute_fetchall(
-                "SELECT s.id as submission_id, s.code as code, "
-                "e.external_job_id as external_job_id "
+                "SELECT s.id as submission_id, s.code as code, s.filename as filename, "
+                "s.metadata as metadata, e.external_job_id as external_job_id "
                 "FROM submissions s JOIN eval_jobs e ON e.submission_id=s.id "
                 "WHERE s.status=? AND e.level='remote' AND e.external_job_id IS NOT NULL",
                 (SubmissionStatus.RUNNING.value,),
@@ -248,10 +484,17 @@ class PrismWorker:
             job = await self.lium.poll_job(str(row["external_job_id"]))
             if job.status != "completed":
                 continue
-            report = inspect_code(str(row["code"]))
+            metadata = loads(str(row["metadata"]))
+            snapshot = source_similarity.snapshot_from_submission(
+                str(row["code"]),
+                str(row["filename"]),
+                metadata if isinstance(metadata, dict) else {},
+            )
+            code = source_similarity.primary_python_code(snapshot)
+            report = inspect_code(code)
             arch_hash = sha256(":".join(sorted(report.ast_fingerprint)).encode()).hexdigest()
             previous = await self.repository.previous_codes(str(row["submission_id"]))
-            anti = evaluate_anti_cheat(str(row["code"]), previous)
+            anti = evaluate_anti_cheat(code, previous)
             await self._finalize_remote_result(
                 submission_id=str(row["submission_id"]),
                 arch_hash=arch_hash,

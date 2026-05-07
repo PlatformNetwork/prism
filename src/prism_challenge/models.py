@@ -35,7 +35,7 @@ class JobStatus(StrEnum):
 
 class SubmissionCreate(BaseModel):
     code: str = Field(min_length=1)
-    filename: str = Field(default="model.py", pattern=r"^[A-Za-z0-9_.-]+\.py$")
+    filename: str = Field(default="model.py", pattern=r"^[A-Za-z0-9_.-]+\.(py|zip)$")
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

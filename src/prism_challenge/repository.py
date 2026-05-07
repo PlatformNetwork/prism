@@ -114,10 +114,109 @@ class PrismRepository:
     async def previous_codes(self, current_submission_id: str) -> list[str]:
         async with self.database.connect() as conn:
             rows = await conn.execute_fetchall(
-                "SELECT code FROM submissions WHERE id != ? ORDER BY created_at DESC LIMIT 100",
+                "SELECT code FROM submissions WHERE id != ? ORDER BY created_at DESC",
                 (current_submission_id,),
             )
         return [str(row["code"]) for row in rows]
+
+    async def store_source_snapshot(
+        self,
+        *,
+        submission_id: str,
+        hotkey: str,
+        code_hash: str,
+        payload: dict[str, Any],
+    ) -> None:
+        async with self.database.connect() as conn:
+            await conn.execute(
+                "INSERT OR REPLACE INTO submission_sources("
+                "submission_id, hotkey, code_hash, files, ast_features, token_shingles, "
+                "fingerprint, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    submission_id,
+                    hotkey,
+                    code_hash,
+                    dumps(payload["files"]),
+                    dumps(payload["ast_features"]),
+                    dumps(payload["token_shingles"]),
+                    str(payload["fingerprint"]),
+                    now_iso(),
+                ),
+            )
+
+    async def source_snapshots(
+        self, *, exclude_submission_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        query = "SELECT * FROM submission_sources"
+        params: tuple[str, ...] = ()
+        if exclude_submission_id:
+            query += " WHERE submission_id != ?"
+            params = (exclude_submission_id,)
+        query += " ORDER BY created_at DESC"
+        async with self.database.connect() as conn:
+            rows = await conn.execute_fetchall(query, params)
+        out = []
+        for row in rows:
+            item = dict(row)
+            item["files"] = loads(item["files"])
+            item["ast_features"] = loads(item["ast_features"])
+            item["token_shingles"] = loads(item["token_shingles"])
+            out.append(item)
+        return out
+
+    async def store_plagiarism_review(
+        self,
+        *,
+        submission_id: str,
+        candidate_submission_id: str | None,
+        similarity: float,
+        verdict: bool,
+        reason: str,
+        violations: list[str],
+        report: dict[str, Any],
+    ) -> None:
+        async with self.database.connect() as conn:
+            await conn.execute(
+                "INSERT OR REPLACE INTO plagiarism_reviews("
+                "submission_id, candidate_submission_id, similarity, verdict, reason, violations, "
+                "report, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    submission_id,
+                    candidate_submission_id,
+                    similarity,
+                    int(verdict),
+                    reason,
+                    dumps(violations),
+                    dumps(report),
+                    now_iso(),
+                ),
+            )
+
+    async def store_llm_review(
+        self,
+        *,
+        submission_id: str,
+        approved: bool,
+        reason: str,
+        violations: list[str],
+        confidence: float,
+        raw: dict[str, Any],
+    ) -> None:
+        async with self.database.connect() as conn:
+            await conn.execute(
+                "INSERT OR REPLACE INTO llm_reviews("
+                "submission_id, approved, reason, violations, confidence, raw, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    submission_id,
+                    int(approved),
+                    reason,
+                    dumps(violations),
+                    confidence,
+                    dumps(raw),
+                    now_iso(),
+                ),
+            )
 
     async def leaderboard(self, epoch_id: int, limit: int = 50) -> list[dict[str, object]]:
         async with self.database.connect() as conn:
@@ -152,5 +251,6 @@ class PrismRepository:
                 (SubmissionStatus.RUNNING.value, now_iso(), row["id"]),
             )
         data = dict(cast(Any, row))
-        data["metadata"] = loads(str(data.get("metadata", "{}")))
+        metadata = loads(str(data.get("metadata", "{}")))
+        data["metadata"] = metadata if isinstance(metadata, dict) else {}
         return data

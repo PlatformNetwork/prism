@@ -41,6 +41,7 @@ def create_app(app_settings: PrismSettings = settings) -> FastAPI:
         ctx,
         lium,
         execution_backend=app_settings.execution_backend,
+        settings=app_settings,
     )
 
     async def get_weights_fn() -> dict[str, float]:

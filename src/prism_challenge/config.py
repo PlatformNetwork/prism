@@ -49,6 +49,39 @@ class PrismSettings(ChallengeSettings):
     kendall_tau_min: float = 0.4
     arch_weight: float = Field(default=0.7, ge=0, le=1)
     recipe_weight: float = Field(default=0.3, ge=0, le=1)
+    llm_review_enabled: bool = False
+    llm_review_required: bool = False
+    chutes_base_url: str = "https://llm.chutes.ai/v1"
+    chutes_model: str | None = None
+    chutes_api_key: str | None = None
+    chutes_api_key_file: Path | None = None
+    llm_review_timeout_seconds: int = 60
+    llm_review_temperature: float = 0.0
+    llm_review_max_tokens: int = 512
+    llm_review_max_retries: int = 1
+    subnet_rules_json: str | None = None
+    subnet_rules_file: Path | None = None
+    plagiarism_enabled: bool = True
+    plagiarism_min_similarity: float = 0.65
+    plagiarism_static_reject_threshold: float = 0.96
+    plagiarism_top_k: int = 2
+    plagiarism_sandbox_enabled: bool = False
+    plagiarism_sandbox_image: str = "python:3.12-alpine"
+    plagiarism_sandbox_timeout_seconds: int = 30
+    plagiarism_storage_max_files: int = 200
+    plagiarism_storage_max_bytes: int = 2_000_000
+    docker_bin: str = "docker"
+    docker_backend: str = "cli"
+    docker_broker_url: str | None = None
+    docker_broker_token: str | None = None
+    docker_broker_token_file: Path | None = None
+    docker_network: str = "none"
+    docker_cpus: float = 1.0
+    docker_memory: str = "512m"
+    docker_memory_swap: str | None = "512m"
+    docker_pids_limit: int = 128
+    docker_read_only: bool = True
+    docker_user: str | None = None
 
     def internal_token(self) -> str:
         if self.shared_token:
@@ -68,6 +101,14 @@ class PrismSettings(ChallengeSettings):
             return self.lium_token
         if self.lium_token_file and self.lium_token_file.exists():
             return self.lium_token_file.read_text(encoding="utf-8").strip()
+        return None
+
+    def chutes_api_key_value(self) -> str | None:
+        if self.chutes_api_key:
+            return self.chutes_api_key
+        if self.chutes_api_key_file and self.chutes_api_key_file.exists():
+            token = self.chutes_api_key_file.read_text(encoding="utf-8").strip()
+            return token or None
         return None
 
 

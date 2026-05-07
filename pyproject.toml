@@ -11,7 +11,8 @@ dependencies = [
   "pydantic-settings>=2.4",
   "PyYAML>=6.0",
   "torch>=2.3",
-  "uvicorn[standard]>=0.30"
+  "uvicorn[standard]>=0.30",
+  "langchain-openai>=0.2.0"
 ]
 
 [project.optional-dependencies]
