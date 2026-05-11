@@ -17,6 +17,31 @@ ALLOWED_IMPORT_ROOTS = {
     "typing",
 }
 FORBIDDEN_CALLS = {"eval", "exec", "open", "compile", "input", "__import__"}
+FORBIDDEN_ATTRS = {
+    "__builtins__",
+    "__class__",
+    "__dict__",
+    "__globals__",
+    "__import__",
+    "__mro__",
+    "__subclasses__",
+    "system",
+    "popen",
+    "spawn",
+    "fork",
+    "remove",
+    "unlink",
+    "rmdir",
+}
+REQUIRED_CONTRACT_FUNCTIONS = {"build_model", "get_recipe"}
+OPTIONAL_CONTRACT_FUNCTIONS = {
+    "configure_optimizer",
+    "inference_logits",
+    "infer",
+    "compute_loss",
+    "train_step",
+}
+CONTRACT_FUNCTIONS = REQUIRED_CONTRACT_FUNCTIONS | OPTIONAL_CONTRACT_FUNCTIONS
 
 
 @dataclass(frozen=True)
@@ -39,7 +64,12 @@ class SandboxViolation(ValueError):
     pass
 
 
-def inspect_code(code: str) -> SandboxReport:
+def inspect_code(
+    code: str,
+    *,
+    require_contract: bool = True,
+    allowed_import_roots: set[str] | None = None,
+) -> SandboxReport:
     tree = ast.parse(code)
     imports: set[str] = set()
     fingerprint: set[str] = set()
@@ -61,15 +91,47 @@ def inspect_code(code: str) -> SandboxReport:
             fingerprint.add(f"call:{node.func.id}")
         elif isinstance(node, ast.Call):
             fingerprint.add(f"call:{_node_name(node.func)}")
-    blocked = imports - ALLOWED_IMPORT_ROOTS
+        if isinstance(node, ast.Attribute) and node.attr in FORBIDDEN_ATTRS:
+            raise SandboxViolation(f"forbidden attribute: {node.attr}")
+    blocked = imports - ALLOWED_IMPORT_ROOTS - (allowed_import_roots or set())
     if blocked:
         raise SandboxViolation(f"forbidden imports: {', '.join(sorted(blocked))}")
-    required = {"build_model", "get_recipe"}
+    if require_contract:
+        validate_miner_contract(tree)
+    return SandboxReport(tree=tree, ast_fingerprint=fingerprint, imports=imports)
+
+
+def validate_miner_contract(tree: ast.AST) -> None:
+    if not isinstance(tree, ast.Module):
+        raise SandboxViolation("submission must be a Python module")
     defined = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
-    missing = required - defined
+    missing = REQUIRED_CONTRACT_FUNCTIONS - defined
     if missing:
         raise SandboxViolation(f"missing functions: {', '.join(sorted(missing))}")
-    return SandboxReport(tree=tree, ast_fingerprint=fingerprint, imports=imports)
+    allowed_top_level = (ast.ClassDef, ast.FunctionDef, ast.Import, ast.ImportFrom)
+    for node in tree.body:
+        if isinstance(node, allowed_top_level):
+            continue
+        if isinstance(node, ast.Assign | ast.AnnAssign) and _constant_assignment(node):
+            continue
+        raise SandboxViolation(
+            "top-level code may only define imports, constants, classes, and functions"
+        )
+    for name in CONTRACT_FUNCTIONS & defined:
+        fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
+        if _has_varargs(fn):
+            raise SandboxViolation(f"{name} may not use *args or **kwargs")
+
+
+def _constant_assignment(node: ast.Assign | ast.AnnAssign) -> bool:
+    value = node.value
+    if value is None:
+        return True
+    return isinstance(value, ast.Constant | ast.Tuple | ast.List | ast.Dict | ast.Set)
+
+
+def _has_varargs(node: ast.FunctionDef) -> bool:
+    return node.args.vararg is not None or node.args.kwarg is not None
 
 
 def _node_name(node: ast.AST) -> str:

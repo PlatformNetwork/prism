@@ -75,6 +75,20 @@ class DockerRunResult:
     timed_out: bool = False
 
 
+@dataclass(frozen=True)
+class DockerContainerInfo:
+    """Docker container metadata scoped to a single challenge."""
+
+    container_id: str
+    container_name: str
+    image: str = ""
+    status: str = ""
+    job_id: str | None = None
+    task_id: str | None = None
+    created: str | None = None
+    labels: Mapping[str, str] = field(default_factory=dict)
+
+
 @dataclass
 class DockerExecutor:
     """Run labelled, resource-limited Docker containers via Docker CLI."""
@@ -93,9 +107,7 @@ class DockerExecutor:
         if self.backend == "broker":
             return self._run_via_broker(spec, timeout_seconds)
         if self.backend not in {"cli", "docker"}:
-            raise DockerExecutorError(
-                f"unsupported Docker executor backend: {self.backend}"
-            )
+            raise DockerExecutorError(f"unsupported Docker executor backend: {self.backend}")
         name = spec.name or self.container_name(spec.labels.get("platform.job", "job"))
         cmd = self.build_run_command(spec, name)
         try:
@@ -163,10 +175,11 @@ class DockerExecutor:
             cmd.extend(["-w", spec.workdir])
         for key, value in spec.env.items():
             cmd.extend(["-e", f"{key}={value}"])
-        labels = {
-            "platform.challenge": self.challenge,
-            **dict(spec.labels),
-        }
+        labels = {**dict(spec.labels), "platform.challenge": self.challenge}
+        if "platform.job" in spec.labels:
+            labels["platform.job"] = str(spec.labels["platform.job"])
+        if "platform.task" in spec.labels:
+            labels["platform.task"] = str(spec.labels["platform.task"])
         for key, value in labels.items():
             cmd.extend(["--label", f"{key}={value}"])
         cmd.extend([spec.image, *spec.command])
@@ -174,9 +187,7 @@ class DockerExecutor:
 
     def cleanup_job(self, job_id: str) -> None:
         if self.backend == "broker":
-            self._post_broker(
-                "/v1/docker/cleanup", {"job_id": job_id}, timeout_seconds=30
-            )
+            self._post_broker("/v1/docker/cleanup", {"job_id": job_id}, timeout_seconds=30)
             return
         filters = [
             "--filter",
@@ -199,6 +210,49 @@ class DockerExecutor:
                 check=False,
             )
 
+    def list_containers(self, job_id: str | None = None) -> list[DockerContainerInfo]:
+        if self.backend == "broker":
+            payload: dict[str, object] = {}
+            if job_id:
+                payload["job_id"] = job_id
+            data = self._post_broker("/v1/docker/list", payload, timeout_seconds=30)
+            containers = data.get("containers", [])
+            if not isinstance(containers, list):
+                raise DockerExecutorError("Docker broker returned invalid list payload")
+            return [
+                DockerContainerInfo(
+                    container_id=str(item.get("container_id") or ""),
+                    container_name=str(item.get("container_name") or ""),
+                    image=str(item.get("image") or ""),
+                    status=str(item.get("status") or ""),
+                    job_id=item.get("job_id"),
+                    task_id=item.get("task_id"),
+                    created=item.get("created"),
+                    labels=dict(item.get("labels") or {}),
+                )
+                for item in containers
+                if isinstance(item, dict)
+            ]
+        filters = ["--filter", f"label=platform.challenge={self.challenge}"]
+        if job_id:
+            filters.extend(["--filter", f"label=platform.job={job_id}"])
+        proc = subprocess.run(
+            [
+                self.docker_bin,
+                "ps",
+                "-a",
+                *filters,
+                "--format",
+                "{{json .}}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise DockerExecutorError(f"Docker list failed: {self._cap(proc.stderr)}")
+        return [_container_from_ps_json(line) for line in proc.stdout.splitlines() if line.strip()]
+
     def remove_container(self, name: str) -> None:
         subprocess.run(
             [self.docker_bin, "rm", "-f", name],
@@ -217,31 +271,19 @@ class DockerExecutor:
     def _validate_spec(self, spec: DockerRunSpec) -> None:
         if not _IMAGE_RE.match(spec.image) or spec.image.startswith("-"):
             raise DockerExecutorError(f"unsafe Docker image reference: {spec.image!r}")
-        if self.allowed_images and not _matches_allowed(
-            spec.image, self.allowed_images
-        ):
+        if self.allowed_images and not _matches_allowed(spec.image, self.allowed_images):
             raise DockerExecutorError(f"Docker image is not allowed: {spec.image}")
         if not spec.command:
             raise DockerExecutorError("Docker command cannot be empty")
-        if spec.limits.network != "none" and not spec.limits.network.startswith(
-            "platform_"
-        ):
-            raise DockerExecutorError(
-                "Docker network must be 'none' or a platform network"
-            )
+        if spec.limits.network != "none" and not spec.limits.network.startswith("platform_"):
+            raise DockerExecutorError("Docker network must be 'none' or a platform network")
         for mount in spec.mounts:
             if not mount.source.exists():
-                raise DockerExecutorError(
-                    f"mount source does not exist: {mount.source}"
-                )
+                raise DockerExecutorError(f"mount source does not exist: {mount.source}")
             if not mount.target.startswith("/"):
-                raise DockerExecutorError(
-                    f"mount target must be absolute: {mount.target}"
-                )
+                raise DockerExecutorError(f"mount target must be absolute: {mount.target}")
 
-    def _run_via_broker(
-        self, spec: DockerRunSpec, timeout_seconds: int
-    ) -> DockerRunResult:
+    def _run_via_broker(self, spec: DockerRunSpec, timeout_seconds: int) -> DockerRunResult:
         payload = {
             "job_id": spec.labels.get("platform.job", "job"),
             "task_id": spec.labels.get("platform.task"),
@@ -254,17 +296,13 @@ class DockerExecutor:
             "mounts": [_encode_mount(mount) for mount in spec.mounts],
             "timeout_seconds": timeout_seconds,
         }
-        data = self._post_broker(
-            "/v1/docker/run", payload, timeout_seconds=timeout_seconds + 15
-        )
+        data = self._post_broker("/v1/docker/run", payload, timeout_seconds=timeout_seconds + 15)
         returncode = data.get("returncode", 0)
         return DockerRunResult(
             container_name=str(data["container_name"]),
             stdout=str(data.get("stdout") or ""),
             stderr=str(data.get("stderr") or ""),
-            returncode=returncode
-            if isinstance(returncode, int)
-            else int(str(returncode)),
+            returncode=returncode if isinstance(returncode, int) else int(str(returncode)),
             timed_out=bool(data.get("timed_out") or False),
         )
 
@@ -292,9 +330,7 @@ class DockerExecutor:
                 return json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
-            raise DockerExecutorError(
-                f"Docker broker request failed: {detail}"
-            ) from exc
+            raise DockerExecutorError(f"Docker broker request failed: {detail}") from exc
         except (OSError, URLError) as exc:
             raise DockerExecutorError(f"Docker broker is unavailable: {exc}") from exc
 
@@ -324,6 +360,31 @@ def _safe_fragment(value: str, limit: int) -> str:
 
 def _matches_allowed(image: str, allowed: Sequence[str]) -> bool:
     return any(image == item or image.startswith(item.rstrip("*")) for item in allowed)
+
+
+def _container_from_ps_json(line: str) -> DockerContainerInfo:
+    data = json.loads(line)
+    labels = _parse_label_string(str(data.get("Labels") or ""))
+    return DockerContainerInfo(
+        container_id=str(data.get("ID") or ""),
+        container_name=str(data.get("Names") or ""),
+        image=str(data.get("Image") or ""),
+        status=str(data.get("Status") or ""),
+        created=str(data.get("CreatedAt") or "") or None,
+        job_id=labels.get("platform.job"),
+        task_id=labels.get("platform.task"),
+        labels=labels,
+    )
+
+
+def _parse_label_string(raw: str) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    for item in raw.split(","):
+        if not item or "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        labels[key] = value
+    return labels
 
 
 def _encode_mount(mount: DockerMount) -> dict[str, object]:

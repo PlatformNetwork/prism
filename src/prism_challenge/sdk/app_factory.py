@@ -41,11 +41,20 @@ def create_challenge_app(
 
     @app.get("/version", response_model=VersionResponse, include_in_schema=False)
     async def version() -> VersionResponse:
+        capabilities = ["get_weights", "proxy_routes", "sqlite", "nas"]
+        backend = getattr(settings, "execution_backend", "")
+        if settings.docker_enabled or backend in {
+            "platform_container",
+            "platform_gpu",
+            "container_gpu",
+            "docker_gpu",
+        }:
+            capabilities.append("docker_executor")
         return VersionResponse(
             api_version=settings.api_version,
             challenge_version=settings.version,
             sdk_version=settings.sdk_version,
-            capabilities=["get_weights", "proxy_routes", "sqlite", "lium", "nas"],
+            capabilities=capabilities,
         )
 
     internal_router = APIRouter(

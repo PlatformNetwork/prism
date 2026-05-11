@@ -33,6 +33,16 @@ class JobStatus(StrEnum):
     FAILED = "failed"
 
 
+class EvaluationAssignmentStatus(StrEnum):
+    ASSIGNED = "assigned"
+    ACCEPTED = "accepted"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+
+
 class SubmissionCreate(BaseModel):
     code: str = Field(min_length=1)
     filename: str = Field(default="model.py", pattern=r"^[A-Za-z0-9_.-]+\.(py|zip)$")
@@ -55,6 +65,28 @@ class SubmissionStatusResponse(SubmissionResponse):
     q_recipe: float | None = None
 
 
+class EvaluationAssignmentResponse(BaseModel):
+    id: str
+    submission_id: str
+    validator_hotkey: str
+    status: EvaluationAssignmentStatus
+    attempt: int
+    deadline_at: datetime
+    code: str
+    filename: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    code_hash: str
+    arch_hash: str
+
+
+class EvaluationAssignmentDecision(BaseModel):
+    reason: str | None = None
+
+
+class EvaluationResultCreate(BaseModel):
+    metrics: dict[str, float]
+
+
 class LeaderboardEntry(BaseModel):
     rank: int
     hotkey: str
@@ -71,3 +103,28 @@ class WeightsResponse(BaseModel):
     challenge_slug: str
     epoch: int
     weights: dict[str, float]
+
+
+class ArchitectureFamilyResponse(BaseModel):
+    id: str
+    family_hash: str
+    owner_hotkey: str
+    owner_submission_id: str
+    canonical_submission_id: str
+    q_arch_best: float
+    created_at: datetime
+    updated_at: datetime
+
+
+class TrainingVariantResponse(BaseModel):
+    id: str
+    architecture_id: str
+    training_hash: str
+    owner_hotkey: str
+    submission_id: str
+    q_recipe: float
+    metric_mean: float
+    metric_std: float
+    is_current_best: bool
+    created_at: datetime
+    updated_at: datetime

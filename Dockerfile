@@ -7,7 +7,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml ./
 COPY src ./src
-RUN pip install --no-cache-dir ".[lium]" && pip install --no-cache-dir --no-deps lium.io==0.0.11
+RUN pip install --no-cache-dir .
 RUN useradd --create-home --shell /usr/sbin/nologin prism \
     && mkdir -p /data \
     && chown -R prism:prism /app /data

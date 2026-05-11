@@ -97,6 +97,15 @@ class SimilarityCandidate:
 
 
 SandboxRunner = Callable[[Path, Path, Path], str]
+ALLOWED_PROJECT_SUFFIXES = {
+    ".py",
+    ".toml",
+    ".yaml",
+    ".yml",
+    ".json",
+    ".txt",
+    ".md",
+}
 
 
 def snapshot_from_named_sources(
@@ -367,9 +376,16 @@ def _extract_zip(path: str, content: str, *, max_files: int, max_bytes: int) -> 
             for info in archive.infolist():
                 if info.is_dir():
                     continue
+                if (info.external_attr >> 16) & 0o170000 == 0o120000:
+                    raise ValueError(f"zip source {path} contains symlink: {info.filename}")
                 if len(out) >= max_files:
                     raise ValueError(f"zip source {path} exceeds {max_files} files")
                 nested_path = _safe_path(f"{Path(path).stem}/{info.filename}")
+                suffix = Path(nested_path).suffix.lower()
+                if suffix not in ALLOWED_PROJECT_SUFFIXES:
+                    raise ValueError(
+                        f"zip source {path} contains unsupported file: {info.filename}"
+                    )
                 data = archive.read(info)
                 total += len(data)
                 if total > max_bytes:

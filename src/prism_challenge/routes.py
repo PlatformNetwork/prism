@@ -7,11 +7,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from .auth import authenticate_miner
 from .models import (
+    ArchitectureFamilyResponse,
     LeaderboardEntry,
     LeaderboardResponse,
     SubmissionCreate,
     SubmissionResponse,
     SubmissionStatusResponse,
+    TrainingVariantResponse,
 )
 from .repository import PrismRepository, epoch_id_for
 from .sdk import public_route
@@ -31,6 +33,8 @@ async def submit_model(
     hotkey: str = Depends(authenticate_miner),
     repository: PrismRepository = Depends(repo_from_request),
 ) -> SubmissionResponse:
+    if not request.app.state.settings.public_submissions_enabled:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "submission route disabled")
     if len(request_body.code.encode()) > request.app.state.settings.max_code_bytes:
         raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "submission too large")
     return await repository.create_submission(hotkey, request_body)
@@ -64,6 +68,54 @@ async def leaderboard(
         for index, row in enumerate(rows)
     ]
     return LeaderboardResponse(epoch_id=epoch_id, entries=entries)
+
+
+@public_route(tags=["components"])
+@router.get("/architectures", response_model=list[ArchitectureFamilyResponse])
+async def architectures(
+    limit: int = 50, repository: PrismRepository = Depends(repo_from_request)
+) -> list[ArchitectureFamilyResponse]:
+    return [
+        ArchitectureFamilyResponse(
+            id=str(row["id"]),
+            family_hash=str(row["family_hash"]),
+            owner_hotkey=str(row["owner_hotkey"]),
+            owner_submission_id=str(row["owner_submission_id"]),
+            canonical_submission_id=str(row["canonical_submission_id"]),
+            q_arch_best=float(cast(SupportsFloat, row["q_arch_best"])),
+            created_at=datetime.fromisoformat(str(row["created_at"])),
+            updated_at=datetime.fromisoformat(str(row["updated_at"])),
+        )
+        for row in await repository.list_architectures(limit=limit)
+    ]
+
+
+@public_route(tags=["components"])
+@router.get("/training-variants", response_model=list[TrainingVariantResponse])
+async def training_variants(
+    architecture_id: str | None = None,
+    limit: int = 100,
+    repository: PrismRepository = Depends(repo_from_request),
+) -> list[TrainingVariantResponse]:
+    return [
+        TrainingVariantResponse(
+            id=str(row["id"]),
+            architecture_id=str(row["architecture_id"]),
+            training_hash=str(row["training_hash"]),
+            owner_hotkey=str(row["owner_hotkey"]),
+            submission_id=str(row["submission_id"]),
+            q_recipe=float(cast(SupportsFloat, row["q_recipe"])),
+            metric_mean=float(cast(SupportsFloat, row["metric_mean"])),
+            metric_std=float(cast(SupportsFloat, row["metric_std"])),
+            is_current_best=bool(row["is_current_best"]),
+            created_at=datetime.fromisoformat(str(row["created_at"])),
+            updated_at=datetime.fromisoformat(str(row["updated_at"])),
+        )
+        for row in await repository.list_training_variants(
+            architecture_id=architecture_id,
+            limit=limit,
+        )
+    ]
 
 
 @public_route(tags=["epochs"])

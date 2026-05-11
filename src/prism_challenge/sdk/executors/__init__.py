@@ -1,6 +1,7 @@
 """Executor helpers for challenge SDK."""
 
 from .docker import (
+    DockerContainerInfo,
     DockerExecutor,
     DockerExecutorError,
     DockerLimits,
@@ -10,6 +11,7 @@ from .docker import (
 )
 
 __all__ = [
+    "DockerContainerInfo",
     "DockerExecutor",
     "DockerExecutorError",
     "DockerLimits",

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 
-from conftest import VALID_CODE, signed_headers
+from conftest import signed_headers
 from fastapi.testclient import TestClient
 
 from prism_challenge.app import create_app
 from prism_challenge.config import PrismSettings
+from prism_challenge.sdk.executors.docker import DockerRunResult
 
 REMOTE_ONLY_CODE = """
 def build_model(ctx):
@@ -29,16 +30,57 @@ def _submit(client: TestClient, code: str, nonce: str = "remote1") -> str:
     return str(response.json()["id"])
 
 
-def test_remote_provider_worker_does_not_execute_submission_code(tmp_path):
+def test_removed_legacy_remote_provider_backend_is_rejected(tmp_path):
     settings = PrismSettings(
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'remote.sqlite3'}",
         shared_token="secret",
         allow_insecure_signatures=True,
         execution_backend="remote_provider",
-        allow_fake_lium=True,
+    )
+    try:
+        create_app(settings)
+    except ValueError as exc:
+        assert "Unsupported execution backend" in str(exc)
+    else:
+        raise AssertionError("remote_provider must not be supported")
+
+
+def test_platform_gpu_worker_runs_submission_in_container(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run(self, spec, timeout_seconds):
+        payload = json.loads((spec.mounts[0].source / "payload.json").read_text())
+        captured["spec"] = spec
+        captured["payload"] = payload
+        captured["timeout_seconds"] = timeout_seconds
+        return DockerRunResult(
+            container_name="prism-eval",
+            stdout=(
+                'PRISM_METRICS_JSON={"q_arch":0.88,"q_recipe":0.66,"penalty":0.0,'
+                '"train_loss":1.2,"eval_loss":1.4,"inference_latency_ms":7.0}\n'
+            ),
+            stderr="",
+            returncode=0,
+        )
+
+    monkeypatch.setattr("prism_challenge.evaluator.container.DockerExecutor.run", fake_run)
+    settings = PrismSettings(
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'platform-gpu.sqlite3'}",
+        shared_token="secret",
+        allow_insecure_signatures=True,
+        execution_backend="platform_gpu",
+        docker_enabled=True,
+        docker_backend="broker",
+        docker_broker_url="http://platform-docker-broker:8082",
+        docker_broker_token="secret",
+        platform_eval_cpus=3.0,
+        platform_eval_memory="12g",
+        platform_eval_gpu_count=2,
+        platform_eval_gpu_type="l4",
+        plagiarism_enabled=False,
     )
     with TestClient(create_app(settings)) as client:
-        submission_id = _submit(client, REMOTE_ONLY_CODE)
+        submission_id = _submit(client, REMOTE_ONLY_CODE, nonce="platform-gpu")
         process = client.post(
             "/internal/v1/worker/process-next",
             headers={"Authorization": "Bearer secret"},
@@ -46,18 +88,72 @@ def test_remote_provider_worker_does_not_execute_submission_code(tmp_path):
         assert process.status_code == 200, process.text
         status = client.get(f"/v1/submissions/{submission_id}").json()
         assert status["status"] == "completed"
-        assert status["q_arch"] == 0.42
-        weights = client.get(
-            "/internal/v1/get_weights",
-            headers={"Authorization": "Bearer secret", "X-Platform-Challenge-Slug": "prism"},
-        ).json()["weights"]
-        assert weights == {"hk": 1.0}
+        assert status["q_arch"] == 0.88
+
+    spec = captured["spec"]
+    assert spec.image == "ghcr.io/platformnetwork/prism-evaluator:latest"
+    assert spec.labels["platform.job"] == submission_id
+    assert spec.labels["platform.task"] == "architecture"
+    assert spec.env["PRISM_EXECUTION_BACKEND"] == "platform_gpu"
+    assert spec.env["PRISM_GPU_COUNT"] == "2"
+    assert spec.env["PRISM_GPU_TYPE"] == "l4"
+    assert spec.limits.cpus == 3.0
+    assert spec.limits.memory == "12g"
+    assert captured["payload"]["code"] == REMOTE_ONLY_CODE
+    assert captured["timeout_seconds"] == 900
 
 
-def test_local_cpu_worker_executes_trainable_model(tmp_path, monkeypatch):
-    import torch
+def test_platform_gpu_rejects_sandbox_violations_before_container(tmp_path, monkeypatch):
+    def fail_run(self, spec, timeout_seconds):
+        raise AssertionError("container should not run")
 
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr("prism_challenge.evaluator.container.DockerExecutor.run", fail_run)
+    code = """
+import os
+
+def build_model(ctx):
+    return None
+
+def get_recipe(ctx):
+    return {}
+"""
+    settings = PrismSettings(
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'platform-gpu-reject.sqlite3'}",
+        shared_token="secret",
+        allow_insecure_signatures=True,
+        execution_backend="platform_gpu",
+        docker_enabled=True,
+        docker_backend="broker",
+        docker_broker_url="http://platform-docker-broker:8082",
+        docker_broker_token="secret",
+        plagiarism_enabled=False,
+    )
+    with TestClient(create_app(settings)) as client:
+        submission_id = _submit(client, code, nonce="platform-gpu-reject")
+        process = client.post(
+            "/internal/v1/worker/process-next",
+            headers={"Authorization": "Bearer secret"},
+        )
+        assert process.status_code == 200, process.text
+        status = client.get(f"/v1/submissions/{submission_id}").json()
+        assert status["status"] == "rejected"
+        assert "forbidden imports: os" in status["error"]
+
+
+def test_platform_gpu_version_advertises_docker_executor(tmp_path):
+    settings = PrismSettings(
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'platform-gpu-version.sqlite3'}",
+        shared_token="secret",
+        allow_insecure_signatures=True,
+        execution_backend="platform_gpu",
+    )
+    with TestClient(create_app(settings)) as client:
+        version = client.get("/version").json()
+    assert "docker_executor" in version["capabilities"]
+    assert "lium" not in version["capabilities"]
+
+
+def test_removed_legacy_local_cpu_backend_is_rejected(tmp_path):
     settings = PrismSettings(
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'local.sqlite3'}",
         shared_token="secret",
@@ -65,16 +161,12 @@ def test_local_cpu_worker_executes_trainable_model(tmp_path, monkeypatch):
         execution_backend="local_cpu",
         sequence_length=16,
     )
-    with TestClient(create_app(settings)) as client:
-        submission_id = _submit(client, VALID_CODE, nonce="local1")
-        process = client.post(
-            "/internal/v1/worker/process-next",
-            headers={"Authorization": "Bearer secret"},
-        )
-        assert process.status_code == 200, process.text
-        status = client.get(f"/v1/submissions/{submission_id}").json()
-        assert status["status"] == "completed"
-        assert status["q_arch"] >= 0
+    try:
+        create_app(settings)
+    except ValueError as exc:
+        assert "Unsupported execution backend" in str(exc)
+    else:
+        raise AssertionError("local_cpu must not be supported")
 
 
 CUSTOM_HOOK_CODE = """
@@ -117,16 +209,27 @@ def train_step(model, batch, optimizer, ctx):
 """
 
 
-def test_local_cpu_accepts_custom_training_and_inference_hooks(tmp_path, monkeypatch):
-    import torch
+def test_platform_gpu_accepts_custom_training_and_inference_hooks(tmp_path, monkeypatch):
+    def fake_run(self, spec, timeout_seconds):
+        return DockerRunResult(
+            container_name="prism-eval",
+            stdout='PRISM_METRICS_JSON={"q_arch":0.7,"q_recipe":0.8}\n',
+            stderr="",
+            returncode=0,
+        )
 
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr("prism_challenge.evaluator.container.DockerExecutor.run", fake_run)
     settings = PrismSettings(
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'hooks.sqlite3'}",
         shared_token="secret",
         allow_insecure_signatures=True,
-        execution_backend="local_cpu",
+        execution_backend="platform_gpu",
+        docker_enabled=True,
+        docker_backend="broker",
+        docker_broker_url="http://platform-docker-broker:8082",
+        docker_broker_token="secret",
         sequence_length=16,
+        plagiarism_enabled=False,
     )
     with TestClient(create_app(settings)) as client:
         submission_id = _submit(client, CUSTOM_HOOK_CODE, nonce="custom-hooks")

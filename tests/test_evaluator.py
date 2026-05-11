@@ -10,13 +10,10 @@ from conftest import VALID_CODE
 
 from prism_challenge.evaluator import llm_review, source_similarity
 from prism_challenge.evaluator.anti_cheat import ast_similarity, evaluate_anti_cheat
-from prism_challenge.evaluator.bench_config import BenchConfig
 from prism_challenge.evaluator.interface import PrismContext, TrainingRecipe
 from prism_challenge.evaluator.l1_syntax import validate_l1
 from prism_challenge.evaluator.l2_proxy import score_l2
 from prism_challenge.evaluator.l3_train import kendall_tau, score_l3
-from prism_challenge.evaluator.l4_benchmark import score_l4
-from prism_challenge.evaluator.lium_client import LiumClient
 from prism_challenge.evaluator.sandbox import (
     SandboxViolation,
     inspect_code,
@@ -41,6 +38,38 @@ def test_sandbox_blocks_forbidden_imports():
         inspect_code("import os\ndef build_model(ctx): pass\ndef get_recipe(ctx): pass")
 
 
+def test_sandbox_blocks_dynamic_escape_patterns():
+    with pytest.raises(SandboxViolation, match="forbidden attribute"):
+        inspect_code(
+            "def build_model(ctx):\n    return (1).__class__\ndef get_recipe(ctx):\n    return {}\n"
+        )
+    with pytest.raises(SandboxViolation, match="top-level code"):
+        inspect_code("print('side effect')\ndef build_model(ctx): pass\ndef get_recipe(ctx): pass")
+
+
+def test_sandbox_accepts_full_miner_training_and_inference_contract():
+    code = (
+        VALID_CODE
+        + """
+
+def configure_optimizer(model, recipe, ctx):
+    return None
+
+def inference_logits(model, batch, ctx):
+    return model(batch.tokens)
+
+def compute_loss(model, batch, ctx):
+    return model(batch.tokens).sum()
+
+def train_step(model, batch, optimizer, ctx):
+    return compute_loss(model, batch, ctx)
+"""
+    )
+    report = inspect_code(code)
+    assert "function:train_step" in report.ast_fingerprint
+    assert "function:inference_logits" in report.ast_fingerprint
+
+
 def test_proxy_train_and_final_scoring():
     ctx = PrismContext(max_parameters=1_000_000)
     l2 = score_l2(VALID_CODE, ctx)
@@ -55,23 +84,6 @@ def test_proxy_train_and_final_scoring():
         penalty=0,
     )
     assert score.final_score > 0
-
-
-async def test_l4_fake_lium():
-    result = await score_l4(
-        VALID_CODE,
-        PrismContext(vocab_size=256, sequence_length=16, max_parameters=1_000_000),
-        LiumClient(base_url=None, token=None),
-        BenchConfig(
-            train_steps=1,
-            seeds=(1,),
-            sequence_lengths=(16,),
-            batch_size=1,
-            vocab_size=256,
-        ),
-    )
-    assert result.q_arch >= 0
-    assert "q_arch" in result.metrics
 
 
 def test_anti_cheat_similarity_and_diversity():

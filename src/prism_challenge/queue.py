@@ -11,16 +11,27 @@ from .config import PrismSettings
 from .db import dumps, loads
 from .evaluator import llm_review, source_similarity
 from .evaluator.anti_cheat import evaluate_anti_cheat
+from .evaluator.components import (
+    PrismComponentFingerprints,
+    PrismProjectComponents,
+    component_fingerprints,
+    project_components,
+)
+from .evaluator.container import PrismContainerEvaluator
 from .evaluator.interface import PrismContext
 from .evaluator.l1_syntax import validate_l1
 from .evaluator.l2_proxy import score_l2
 from .evaluator.l3_train import score_l3
 from .evaluator.l4_benchmark import score_l4
-from .evaluator.lium_client import LiumClient, LiumJob
+from .evaluator.lium_client import LiumJob
 from .evaluator.review_rules import ReviewRule, load_review_rules
-from .evaluator.sandbox import inspect_code, load_submission_contract
+from .evaluator.sandbox import (
+    SandboxViolation,
+    inspect_code,
+    load_submission_contract,
+)
 from .evaluator.scoring import final_score, score_recipe
-from .models import SubmissionStatus
+from .models import EvaluationAssignmentStatus, SubmissionStatus
 from .repository import PrismRepository, now_iso
 from .sdk.executors.docker import DockerExecutor, DockerLimits, DockerMount, DockerRunSpec
 
@@ -29,6 +40,10 @@ DEFAULT_REVIEW_RULES = (
     ReviewRule("prism:no-escape", "Do not use filesystem, process, or network escapes."),
     ReviewRule("prism:model-contract", "Only implement the Prism model and recipe contract."),
 )
+CONTAINER_EXECUTION_BACKENDS = frozenset(
+    {"platform_container", "platform_gpu", "container_gpu", "docker_gpu"}
+)
+SUPPORTED_EXECUTION_BACKENDS = CONTAINER_EXECUTION_BACKENDS
 
 
 @dataclass(frozen=True)
@@ -39,21 +54,26 @@ class StaticReviewOutcome:
     violations: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class ComponentReview:
+    components: PrismProjectComponents
+    fingerprints: PrismComponentFingerprints
+
+
 class PrismWorker:
     def __init__(
         self,
         repository: PrismRepository,
         ctx: PrismContext,
-        lium: LiumClient,
         *,
-        execution_backend: str = "local_cpu",
+        execution_backend: str = "platform_gpu",
         settings: PrismSettings | None = None,
     ) -> None:
-        if execution_backend not in {"local_cpu", "remote_provider"}:
+        if execution_backend not in SUPPORTED_EXECUTION_BACKENDS:
             raise ValueError(f"Unsupported execution backend: {execution_backend}")
         self.repository = repository
         self.ctx = ctx
-        self.lium = lium
+        self.lium: Any = None
         self.execution_backend = execution_backend
         self.settings = settings or PrismSettings()
 
@@ -68,11 +88,106 @@ class PrismWorker:
         metadata = cast(dict[str, Any], raw_metadata) if isinstance(raw_metadata, dict) else {}
         hotkey = str(submission.get("hotkey") or "")
         code_hash = str(submission.get("code_hash") or sha256(code.encode()).hexdigest())
-        if self.execution_backend == "remote_provider":
-            return await self._submit_remote(
+        if self.execution_backend in CONTAINER_EXECUTION_BACKENDS:
+            return await self._process_container(
                 submission_id, code, filename, metadata, hotkey, code_hash
             )
-        return await self._process_local(submission_id, code, filename, metadata, hotkey, code_hash)
+        raise ValueError(f"Unsupported execution backend: {self.execution_backend}")
+
+    async def assign_next_to_validator(self, validator_hotkey: str):
+        existing = await self.repository.active_assignment_for_validator(validator_hotkey)
+        if existing is not None:
+            return existing
+        submission = await self.repository.claim_next()
+        if submission is None:
+            return None
+        submission_id = str(submission["id"])
+        code = str(submission["code"])
+        filename = str(submission.get("filename") or "model.py")
+        raw_metadata = submission.get("metadata")
+        metadata = cast(dict[str, Any], raw_metadata) if isinstance(raw_metadata, dict) else {}
+        hotkey = str(submission.get("hotkey") or "")
+        code_hash = str(submission.get("code_hash") or sha256(code.encode()).hexdigest())
+        try:
+            review = await self._review_static_submission(
+                submission_id=submission_id,
+                code=code,
+                filename=filename,
+                metadata=metadata,
+                hotkey=hotkey,
+                code_hash=code_hash,
+            )
+            if review.rejected:
+                await self._reject_submission(submission_id, review.reason or "review rejected")
+                return None
+            snapshot = self._snapshot_from_submission(code, filename, metadata)
+            component_review = self._component_review(snapshot)
+            report = inspect_code(review.code)
+        except Exception as exc:
+            await self._reject_submission(submission_id, str(exc))
+            return None
+        arch_hash = component_review.fingerprints.family_hash
+        if not arch_hash:
+            arch_hash = sha256(":".join(sorted(report.ast_fingerprint)).encode()).hexdigest()
+        return await self.repository.create_assignment(
+            submission_id=submission_id,
+            validator_hotkey=validator_hotkey,
+            arch_hash=arch_hash,
+            timeout_seconds=self.settings.validator_assignment_timeout_seconds,
+        )
+
+    async def reject_assignment(self, assignment_id: str, reason: str | None = None) -> None:
+        assignment = await self.repository.get_assignment(assignment_id)
+        if assignment is None:
+            raise ValueError("assignment not found")
+        await self.repository.set_assignment_status(
+            assignment_id,
+            EvaluationAssignmentStatus.REJECTED,
+            error=reason or "validator rejected assignment",
+        )
+        if assignment.attempt >= self.settings.validator_assignment_max_attempts:
+            await self._fail_submission(
+                assignment.submission_id, "validator assignment attempts exhausted"
+            )
+            return
+        async with self.repository.database.connect() as conn:
+            await conn.execute(
+                "UPDATE submissions SET status=?, updated_at=? WHERE id=?",
+                (SubmissionStatus.PENDING.value, now_iso(), assignment.submission_id),
+            )
+
+    async def expire_assignments(self) -> list[str]:
+        return await self.repository.expire_stale_assignments(
+            self.settings.validator_assignment_max_attempts
+        )
+
+    async def complete_assignment(self, assignment_id: str, metrics: dict[str, float]) -> None:
+        assignment = await self.repository.get_assignment(assignment_id)
+        if assignment is None:
+            raise ValueError("assignment not found")
+        await self.repository.set_assignment_status(
+            assignment_id,
+            EvaluationAssignmentStatus.COMPLETED,
+            metrics=metrics,
+        )
+        component_review: ComponentReview | None = None
+        try:
+            snapshot = self._snapshot_from_submission(
+                assignment.code,
+                assignment.filename,
+                assignment.metadata,
+            )
+            component_review = self._component_review(snapshot)
+        except Exception:
+            component_review = None
+        await self._finalize_remote_result(
+            submission_id=assignment.submission_id,
+            arch_hash=assignment.arch_hash,
+            anti_multiplier=1.0,
+            diversity_bonus=0.0,
+            metrics=metrics,
+            component_review=component_review,
+        )
 
     async def _process_local(
         self,
@@ -190,13 +305,21 @@ class PrismWorker:
             if review.rejected:
                 await self._reject_submission(submission_id, review.reason or "review rejected")
                 return submission_id
+            snapshot = self._snapshot_from_submission(code, filename, metadata)
+            component_review = self._component_review(snapshot)
             code = review.code
-            report = inspect_code(code)
+            report = self._inspect_project_snapshot(snapshot, code)
             code_hash = sha256(code.encode()).hexdigest()
-            arch_basis = ":".join(sorted(report.ast_fingerprint))
-            arch_hash = sha256(arch_basis.encode()).hexdigest()
+            arch_hash = component_review.fingerprints.family_hash
+            if not arch_hash:
+                arch_basis = ":".join(sorted(report.ast_fingerprint))
+                arch_hash = sha256(arch_basis.encode()).hexdigest()
             previous = await self.repository.previous_codes(submission_id)
-            anti = evaluate_anti_cheat(code, previous)
+            anti = evaluate_anti_cheat(
+                code,
+                previous,
+                allowed_import_roots=self._local_import_roots(snapshot),
+            )
             job = await self.lium.submit_job(
                 {
                     "challenge": "prism",
@@ -229,6 +352,7 @@ class PrismWorker:
                     anti_multiplier=anti.multiplier,
                     diversity_bonus=anti.diversity_bonus,
                     metrics=job.metrics,
+                    component_review=component_review,
                 )
             return submission_id
         except Exception as exc:
@@ -238,6 +362,131 @@ class PrismWorker:
                     (SubmissionStatus.REJECTED.value, str(exc), now_iso(), submission_id),
                 )
             return submission_id
+
+    async def _process_container(
+        self,
+        submission_id: str,
+        code: str,
+        filename: str,
+        metadata: dict[str, Any],
+        hotkey: str,
+        code_hash: str,
+    ) -> str:
+        try:
+            review = await self._review_static_submission(
+                submission_id=submission_id,
+                code=code,
+                filename=filename,
+                metadata=metadata,
+                hotkey=hotkey,
+                code_hash=code_hash,
+            )
+            if review.rejected:
+                await self._reject_submission(submission_id, review.reason or "review rejected")
+                return submission_id
+            snapshot = self._snapshot_from_submission(code, filename, metadata)
+            component_review = self._component_review(snapshot)
+            code = review.code
+            report = self._inspect_project_snapshot(snapshot, code)
+        except (SandboxViolation, SyntaxError) as exc:
+            await self._reject_submission(submission_id, str(exc))
+            return submission_id
+        except Exception as exc:
+            await self._reject_submission(submission_id, str(exc))
+            return submission_id
+
+        code_hash = sha256(code.encode()).hexdigest()
+        arch_hash = component_review.fingerprints.family_hash
+        if not arch_hash:
+            arch_hash = sha256(":".join(sorted(report.ast_fingerprint)).encode()).hexdigest()
+        previous = await self.repository.previous_codes(submission_id)
+        anti = evaluate_anti_cheat(
+            code,
+            previous,
+            allowed_import_roots=self._local_import_roots(snapshot),
+        )
+        evaluator = PrismContainerEvaluator(settings=self.settings, ctx=self.ctx)
+        try:
+            result = await asyncio.to_thread(
+                evaluator.evaluate,
+                submission_id=submission_id,
+                code=code,
+                code_hash=code_hash,
+                arch_hash=arch_hash,
+                backend=self.execution_backend,
+                files=snapshot.files,
+                entrypoint=component_review.components.entrypoint,
+            )
+            await self._record_container_job(
+                submission_id=submission_id,
+                status="completed",
+                container_name=result.container_name,
+                metrics=result.metrics,
+            )
+            await self._finalize_remote_result(
+                submission_id=submission_id,
+                arch_hash=arch_hash,
+                anti_multiplier=anti.multiplier,
+                diversity_bonus=anti.diversity_bonus,
+                metrics=result.metrics,
+                component_review=component_review,
+            )
+            return submission_id
+        except Exception as exc:
+            await self._record_container_job(
+                submission_id=submission_id,
+                status="failed",
+                container_name=None,
+                metrics={},
+                error=str(exc),
+            )
+            await self._fail_submission(submission_id, str(exc))
+            return submission_id
+
+    def _inspect_project_snapshot(
+        self, snapshot: source_similarity.SourceSnapshot, primary_code: str
+    ):
+        local_imports = self._local_import_roots(snapshot)
+        report = inspect_code(primary_code, allowed_import_roots=local_imports)
+        for file in snapshot.python_files:
+            if file.content == primary_code:
+                continue
+            inspect_code(file.content, require_contract=False, allowed_import_roots=local_imports)
+        return report
+
+    def _local_import_roots(self, snapshot: source_similarity.SourceSnapshot) -> set[str]:
+        return {
+            Path(file.path).stem
+            for file in snapshot.python_files
+            if Path(file.path).stem != "__init__"
+        }
+
+    def _snapshot_from_submission(
+        self,
+        code: str,
+        filename: str,
+        metadata: dict[str, Any],
+    ) -> source_similarity.SourceSnapshot:
+        return source_similarity.snapshot_from_submission(
+            code,
+            filename,
+            metadata,
+            max_files=self.settings.plagiarism_storage_max_files,
+            max_bytes=self.settings.plagiarism_storage_max_bytes,
+        )
+
+    def _component_review(self, snapshot: source_similarity.SourceSnapshot) -> ComponentReview:
+        components = project_components(snapshot)
+        return ComponentReview(
+            components=components,
+            fingerprints=component_fingerprints(components),
+        )
+
+    def _entrypoint_code(self, snapshot: source_similarity.SourceSnapshot, entrypoint: str) -> str:
+        match = next((file for file in snapshot.files if file.path == entrypoint), None)
+        if match is None:
+            raise ValueError(f"Prism project entrypoint not found: {entrypoint}")
+        return match.content
 
     async def _review_static_submission(
         self,
@@ -249,14 +498,12 @@ class PrismWorker:
         hotkey: str,
         code_hash: str,
     ) -> StaticReviewOutcome:
-        snapshot = source_similarity.snapshot_from_submission(
-            code,
-            filename,
-            metadata,
-            max_files=self.settings.plagiarism_storage_max_files,
-            max_bytes=self.settings.plagiarism_storage_max_bytes,
-        )
-        code_for_eval = source_similarity.primary_python_code(snapshot)
+        try:
+            snapshot = self._snapshot_from_submission(code, filename, metadata)
+            component_review = self._component_review(snapshot)
+            code_for_eval = self._entrypoint_code(snapshot, component_review.components.entrypoint)
+        except Exception as exc:
+            return StaticReviewOutcome("", True, str(exc))
         if not code_for_eval.strip():
             return StaticReviewOutcome(code_for_eval, True, "submission contains no Python source")
         await self.repository.store_source_snapshot(
@@ -269,10 +516,10 @@ class PrismWorker:
         llm_config = self._llm_config()
         safety = await asyncio.to_thread(
             llm_review.review_code,
-            code_for_eval,
+            snapshot.combined_python(),
             config=llm_config,
             rules=rules,
-            subject="Prism model",
+            subject="Prism project",
         )
         await self.repository.store_llm_review(
             submission_id=submission_id,
@@ -340,6 +587,13 @@ class PrismWorker:
             await conn.execute(
                 "UPDATE submissions SET status=?, error=?, updated_at=? WHERE id=?",
                 (SubmissionStatus.REJECTED.value, reason, now_iso(), submission_id),
+            )
+
+    async def _fail_submission(self, submission_id: str, reason: str) -> None:
+        async with self.repository.database.connect() as conn:
+            await conn.execute(
+                "UPDATE submissions SET status=?, error=?, updated_at=? WHERE id=?",
+                (SubmissionStatus.FAILED.value, reason, now_iso(), submission_id),
             )
 
     def _review_rules(self) -> tuple[ReviewRule, ...]:
@@ -430,6 +684,32 @@ class PrismWorker:
                 ),
             )
 
+    async def _record_container_job(
+        self,
+        *,
+        submission_id: str,
+        status: str,
+        container_name: str | None,
+        metrics: dict[str, float],
+        error: str | None = None,
+    ) -> None:
+        async with self.repository.database.connect() as conn:
+            await conn.execute(
+                "INSERT INTO eval_jobs(id, submission_id, level, status, external_job_id, metrics, "
+                "error, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(uuid4()),
+                    submission_id,
+                    self.execution_backend,
+                    status,
+                    container_name,
+                    dumps(metrics),
+                    error,
+                    now_iso(),
+                    now_iso(),
+                ),
+            )
+
     async def _finalize_remote_result(
         self,
         *,
@@ -438,6 +718,7 @@ class PrismWorker:
         anti_multiplier: float,
         diversity_bonus: float,
         metrics: dict[str, float],
+        component_review: ComponentReview | None = None,
     ) -> None:
         q_arch = max(0.0, min(1.0, float(metrics.get("q_arch", 0.0))))
         q_recipe = max(0.0, min(1.0, float(metrics.get("q_recipe", 0.5))))
@@ -469,8 +750,42 @@ class PrismWorker:
                 "UPDATE submissions SET status=?, arch_hash=?, updated_at=? WHERE id=?",
                 (SubmissionStatus.COMPLETED.value, arch_hash, now_iso(), submission_id),
             )
+        if self.settings.component_rewards_enabled and component_review is not None:
+            metric_mean = max(0.0, min(1.0, float(metrics.get("q_recipe", q_recipe))))
+            metric_std = max(
+                0.0,
+                float(
+                    metrics.get(
+                        "q_recipe_std",
+                        metrics.get("metric_std", self.settings.training_metric_default_std),
+                    )
+                ),
+            )
+            await self.repository.record_component_result(
+                submission_id=submission_id,
+                project_kind=component_review.components.kind,
+                family_hash=component_review.fingerprints.family_hash,
+                arch_fingerprint=component_review.fingerprints.arch_fingerprint,
+                behavior_fingerprint=component_review.fingerprints.behavior_fingerprint,
+                training_hash=component_review.fingerprints.training_hash,
+                requested_architecture_id=component_review.components.architecture_id,
+                q_arch=q_arch,
+                q_recipe=q_recipe,
+                metric_mean=metric_mean,
+                metric_std=metric_std,
+                architecture_weight=self.settings.architecture_reward_weight,
+                training_weight=self.settings.training_reward_weight,
+                architecture_delta_abs=self.settings.architecture_improvement_min_delta_abs,
+                architecture_delta_rel=self.settings.architecture_improvement_min_delta_rel,
+                training_delta_abs=self.settings.training_improvement_min_delta_abs,
+                training_delta_rel=self.settings.training_improvement_min_delta_rel,
+                training_z_score=self.settings.training_improvement_z_score,
+                metrics=metrics,
+            )
 
     async def poll_remote_jobs(self) -> list[str]:
+        if self.lium is None:
+            return []
         completed: list[str] = []
         async with self.repository.database.connect() as conn:
             rows = await conn.execute_fetchall(

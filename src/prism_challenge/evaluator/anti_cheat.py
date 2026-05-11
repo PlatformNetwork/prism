@@ -19,10 +19,14 @@ class AntiCheatResult:
     findings: list[CheatFinding]
 
 
-def ast_similarity(left: str, right: str) -> float:
+def ast_similarity(left: str, right: str, *, allowed_import_roots: set[str] | None = None) -> float:
     try:
-        left_fingerprint = inspect_code(left).ast_fingerprint
-        right_fingerprint = inspect_code(right).ast_fingerprint
+        left_fingerprint = inspect_code(
+            left, allowed_import_roots=allowed_import_roots
+        ).ast_fingerprint
+        right_fingerprint = inspect_code(
+            right, allowed_import_roots=allowed_import_roots
+        ).ast_fingerprint
     except Exception:
         return 0.0
     if not left_fingerprint or not right_fingerprint:
@@ -36,16 +40,21 @@ def jaccard_distance(left: set[str], right: set[str]) -> float:
     return 1.0 - (len(left & right) / len(left | right))
 
 
-def evaluate_anti_cheat(code: str, previous_codes: list[str]) -> AntiCheatResult:
-    report = inspect_code(code)
+def evaluate_anti_cheat(
+    code: str,
+    previous_codes: list[str],
+    *,
+    allowed_import_roots: set[str] | None = None,
+) -> AntiCheatResult:
+    report = inspect_code(code, allowed_import_roots=allowed_import_roots)
     findings: list[CheatFinding] = []
     max_similarity = 0.0
     distances: list[float] = []
     for previous in previous_codes:
-        similarity = ast_similarity(code, previous)
+        similarity = ast_similarity(code, previous, allowed_import_roots=allowed_import_roots)
         max_similarity = max(max_similarity, similarity)
         try:
-            previous_report = inspect_code(previous)
+            previous_report = inspect_code(previous, allowed_import_roots=allowed_import_roots)
         except Exception:
             continue
         distances.append(jaccard_distance(report.ast_fingerprint, previous_report.ast_fingerprint))

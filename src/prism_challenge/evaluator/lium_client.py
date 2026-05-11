@@ -192,6 +192,7 @@ import dataclasses
 import json
 import math
 import sys
+import time
 import types
 
 if len(sys.argv) > 1 and sys.argv[1].endswith(".json"):
@@ -287,6 +288,16 @@ else:
     )
 initial_loss = float(loss_for(tokens).detach().cpu())
 final_loss = initial_loss
+inference_start = time.perf_counter()
+with torch.no_grad():
+    eval_logits = logits_for(tokens)
+inference_latency_ms = (time.perf_counter() - inference_start) * 1000.0
+eval_vocab = eval_logits.shape[-1]
+eval_loss = float(
+    F.cross_entropy(eval_logits.reshape(-1, eval_vocab), tokens[:, 1:].reshape(-1) % eval_vocab)
+    .detach()
+    .cpu()
+)
 for _ in range(3):
     batch = torch.randint(0, ctx.vocab_size, (batch_size, seq), device=device)
     custom_step = getattr(module, "train_step", None)
@@ -308,8 +319,12 @@ metrics = {
     "q_recipe": 1.0 if 1e-5 <= float(getattr(recipe, "learning_rate", 3e-4)) <= 3e-3 else 0.5,
     "initial_loss": initial_loss,
     "final_loss": final_loss,
+    "train_loss": final_loss,
+    "eval_loss": eval_loss,
     "val_loss": final_loss,
     "parameter_count": float(params),
+    "inference_latency_ms": float(inference_latency_ms),
+    "efficiency": float(efficiency),
 }
 print("PRISM_METRICS_JSON=" + json.dumps(metrics, separators=(",", ":")))
 """
