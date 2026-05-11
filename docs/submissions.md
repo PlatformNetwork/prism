@@ -1,6 +1,6 @@
 # Submission Format
 
-PRISM accepts Python submissions as either a single `.py` file or a multi-file `.zip` project. Multi-file ZIP projects are the preferred format because they let miners separate architecture, training, and inference code cleanly.
+PRISM accepts Python submissions as either a single `.py` file or a multi-file `.zip` project. Multi-file ZIP projects are the preferred format because they let miners separate architecture, optimizer setup, loss computation, training-step logic, and inference code cleanly.
 
 ## Project Manifest
 
@@ -59,9 +59,9 @@ def get_recipe(ctx):
 - `max_parameters`
 - `seed`
 
-## Optional Hooks
+## First-Class Optional Hooks
 
-Miners can customize optimization and inference with optional functions:
+Miners can customize optimization, inference, loss computation, and training behavior with optional hooks. These hooks are not treated as incidental helper functions: PRISM records whether they are present, whether the evaluator used them, and which files contributed to the training/inference fingerprint.
 
 ```python
 def configure_optimizer(model, recipe, ctx):
@@ -80,7 +80,42 @@ def train_step(model, batch, optimizer, ctx):
     ...
 ```
 
-These hooks allow miners to propose training and inference improvements without necessarily introducing a new architecture family.
+Hook semantics:
+
+| Hook | Purpose | Attribution |
+| --- | --- | --- |
+| `configure_optimizer` | Custom optimizer, parameter groups, schedules, clipping wrappers | Training owner |
+| `inference_logits` | Preferred inference path returning logits | Training/inference owner |
+| `infer` | Fallback inference path when `inference_logits` is absent | Training/inference owner |
+| `compute_loss` | Custom loss, auxiliary losses, regularization | Training owner |
+| `train_step` | Fully custom update step | Training owner |
+
+If both `inference_logits` and `infer` exist, `inference_logits` takes precedence. These hooks allow miners to propose training and inference improvements without necessarily introducing a new architecture family.
+
+The evaluator may emit hook metrics such as:
+
+```json
+{
+  "hook.configure_optimizer.present": 1.0,
+  "hook.configure_optimizer.used": 1.0,
+  "hook.inference_logits.present": 1.0,
+  "hook.inference_logits.used": 1.0,
+  "hook.compute_loss.used": 1.0,
+  "hook.train_step.used": 1.0
+}
+```
+
+## Scaling Metadata
+
+Submissions should be written so the same code can be evaluated across multiple proxy regimes:
+
+- smaller and larger parameter counts;
+- shallow and deep variants;
+- short and long sequence lengths;
+- small and large global batches;
+- multiple seeds.
+
+Avoid hard-coding one fixed tensor shape, batch size, context length, or parameter budget. PRISM needs architecture and training code that can be probed for scaling behavior, not just code that wins one tiny run.
 
 ## Example Multi-File Project
 

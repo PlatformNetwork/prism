@@ -86,6 +86,56 @@ PRISM_TRAINING_IMPROVEMENT_Z_SCORE=1.0
 
 Architecture and training weights should usually sum to `1.0`.
 
+## Semantic Attribution Configuration
+
+The component agent protects ownership from useless diffs and low-confidence matches:
+
+```bash
+PRISM_COMPONENT_AGENT_ENABLED=true
+PRISM_COMPONENT_AGENT_REQUIRED=false
+PRISM_COMPONENT_AGENT_MIN_CONFIDENCE=0.72
+PRISM_COMPONENT_AGENT_TRANSFER_CONFIDENCE=0.86
+PRISM_COMPONENT_AGENT_SAME_THRESHOLD=0.82
+PRISM_COMPONENT_AGENT_HOLD_THRESHOLD=0.55
+PRISM_COMPONENT_AGENT_CANDIDATE_TOP_K=5
+PRISM_COMPONENT_AGENT_MERMAID_ENABLED=true
+PRISM_COMPONENT_HOLD_LOW_CONFIDENCE=true
+```
+
+Recommended transfer gates:
+
+```bash
+PRISM_ARCHITECTURE_TRANSFER_MIN_DELTA_ABS=0.08
+PRISM_ARCHITECTURE_TRANSFER_MIN_DELTA_REL=0.05
+PRISM_TRAINING_TRANSFER_MIN_DELTA_ABS=0.05
+PRISM_TRAINING_TRANSFER_MIN_DELTA_REL=0.03
+```
+
+Low-confidence holds can be inspected and resolved with:
+
+```bash
+curl -H "Authorization: Bearer dev-secret" \
+  http://localhost:8000/internal/v1/component-review/holds
+```
+
+## Scaling-Signal Configuration
+
+Evaluator images should report stability and scaling metrics when available:
+
+- `loss_smoothness`
+- `loss_spike_count`
+- `grad_norm_mean`
+- `grad_norm_max`
+- `activation_spike_rate`
+- `scaling_consistency`
+- `depth_scaling_score`
+- `sequence_scaling_score`
+- `batch_scaling_score`
+- `nan_count`
+- `overflow_count`
+
+These metrics should complement `q_arch` and `q_recipe`; do not rely on final loss or a single benchmark alone.
+
 ## Running Locally
 
 ```bash
@@ -122,3 +172,4 @@ curl -H "Authorization: Bearer dev-secret" \
 | evaluation failed | Broker, image, GPU, timeout, or container error |
 | empty weights | No completed component-scored submissions yet |
 | training variant not rewarded | Improvement did not pass dynamic threshold |
+| submission held | Component agent confidence was too low; resolve the review hold |

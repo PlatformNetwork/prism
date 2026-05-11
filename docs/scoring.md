@@ -19,9 +19,20 @@ Evaluator containers return normalized metrics such as:
 | `eval_loss` / `val_loss` | Evaluation loss |
 | `parameter_count` | Model parameter count |
 | `inference_latency_ms` | Optional inference latency |
+| `hook.*.present` | Whether a first-class optional hook exists |
+| `hook.*.used` | Whether the evaluator actually used that hook |
+| `loss_smoothness` | Loss-curve smoothness or oscillation penalty signal |
+| `grad_norm_mean` / `grad_norm_max` | Gradient-norm stability signals |
+| `activation_spike_rate` | Activation-spike signal for large-scale instability |
+| `scaling_consistency` | Consistency of gains across parameter-count probes |
+| `depth_scaling_score` | Stability when depth increases under comparable compute |
+| `sequence_scaling_score` | Stability when context length increases |
+| `batch_scaling_score` | Stability when global batch increases |
 | `penalty` | Optional evaluator penalty |
 
 The final score is still stored for leaderboard compatibility, but component ownership drives validator weights when component rewards exist.
+
+PRISM deliberately treats final perplexity or a single benchmark score as insufficient. Scaling-aware metrics are preferred because many designs look strong at small scale but fail when residual streams, normalization, routing, KV cache, or activations are stressed.
 
 ## Architecture Ownership
 
@@ -45,6 +56,36 @@ Training and inference code are fingerprinted separately from architecture code.
 
 A new training variant becomes the current best only when it beats the existing best by a meaningful margin. If it does, the training contributor receives training reward exposure for that architecture.
 
+Training ownership includes code in:
+
+- `configure_optimizer`;
+- `inference_logits` / `infer`;
+- `compute_loss`;
+- `train_step`;
+- training helper files declared in `prism.yaml`.
+
+These hooks are fingerprinted and reviewed semantically so useless differences such as renaming functions, moving files, wrapping the same model, or changing constants without meaningful scaling impact do not create new ownership.
+
+## Agent-First Semantic Attribution
+
+PRISM stores deterministic signatures and semantic summaries for each submission:
+
+- source fingerprints;
+- architecture and training call graphs;
+- hook metadata;
+- Mermaid architecture sketches;
+- architecture and training summaries.
+
+Agent-first review compares a new submission against candidate architecture families and training variants. The agent decision can be:
+
+- `new`;
+- `existing`;
+- `transfer`;
+- `hold`;
+- `reject`.
+
+Low-confidence cases are held for review and do not affect weights until resolved. Major improvements can transfer current ownership when the semantic decision and metric thresholds both support it.
+
 ## Dynamic Thresholds
 
 PRISM uses configurable thresholds to avoid rewarding noise:
@@ -63,6 +104,8 @@ The required improvement is the maximum of:
 - absolute delta threshold;
 - relative delta threshold;
 - z-score threshold based on reported variance.
+
+For transfer decisions, PRISM uses stricter transfer thresholds. This prevents a miner from taking ownership of an architecture or training variant through tiny noisy gains.
 
 ```mermaid
 flowchart LR

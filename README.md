@@ -4,7 +4,7 @@
 
 **Decentralized neural architecture search for frontier-model research**
 
-**[Overview](docs/overview.md) • [Architecture](docs/architecture.md) • [Submissions](docs/submissions.md) • [Scoring](docs/scoring.md) • [Security](docs/security.md) • [Operators](docs/operators.md) • [API](docs/api.md)**
+**[Overview](docs/overview.md) • [Architecture](docs/architecture.md) • [Submissions](docs/submissions.md) • [Scoring](docs/scoring.md) • [Scaling](docs/scaling.md) • [Security](docs/security.md) • [Operators](docs/operators.md) • [API](docs/api.md)**
 
 [![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-challenge-009688.svg)](https://fastapi.tiangolo.com/)
@@ -19,15 +19,16 @@
 
 ## Overview
 
-PRISM is a Platform Network challenge for **decentralized neural architecture search**. Miners submit Python projects that define model architectures, training recipes, and inference hooks. PRISM evaluates those projects in isolated GPU containers on smaller proxy models, then rewards the ideas that produce better architecture and training behavior.
+PRISM is a Platform Network challenge for **decentralized neural architecture search**. Miners submit Python projects that define model architectures, training recipes, loss functions, optimizer setup, training steps, and inference hooks. PRISM evaluates those projects in isolated GPU containers on smaller proxy models, then rewards the ideas that produce better architecture and training behavior.
 
-The goal is not to train frontier models directly inside the challenge. Instead, PRISM searches the design space around frontier-model building blocks using compact evaluations that are fast enough for a subnet, but rich enough to surface useful architecture, optimizer, loss, and inference patterns.
+The goal is not to train frontier models directly inside the challenge. Instead, PRISM searches the design space around frontier-model building blocks using compact evaluations that are fast enough for a subnet, but rich enough to surface useful architecture, optimizer, loss, inference, and scaling-law signals.
 
 ## What PRISM Rewards
 
 - **Architecture discovery**: first discovery of a meaningful architecture family earns architecture ownership.
-- **Training and inference improvement**: later miners can improve training code for an existing architecture and earn training ownership.
+- **Training and inference improvement**: later miners can improve optimizer setup, inference logits, loss computation, or train-step code for an existing architecture and earn training ownership.
 - **Robust improvements**: dynamic thresholds and noise checks prevent tiny random metric changes from stealing rewards.
+- **Scaling-aware signals**: PRISM emphasizes smooth loss curves, stable gradients, activation stability, and consistent improvements across model size, depth, sequence length, and batch scaling.
 - **Secure execution**: submitted code is reviewed statically and by optional LLM policy checks, then executed only inside isolated containers through the Platform Docker broker.
 
 ---
@@ -38,6 +39,7 @@ The goal is not to train frontier models directly inside the challenge. Instead,
 - [Architecture](docs/architecture.md)
 - [Submission Format](docs/submissions.md)
 - [Scoring and Rewards](docs/scoring.md)
+- [Scaling Evaluation](docs/scaling.md)
 - [Security Model](docs/security.md)
 - [Operator Guide](docs/operators.md)
 - [API Reference](docs/api.md)
@@ -53,7 +55,8 @@ flowchart LR
     Prism --> Review[Review]
     Review --> Broker[Docker Broker]
     Broker --> GPU[GPU Eval]
-    GPU --> Scores[Scores]
+    GPU --> Scale[Scaling Signals]
+    Scale --> Scores[Scores]
     Scores --> Weights[Weights]
 ```
 
@@ -68,7 +71,8 @@ sequenceDiagram
     P->>R: verified hotkey submission
     R->>R: static and LLM review
     R->>D: isolated GPU evaluation
-    D-->>R: q_arch and q_recipe
+    D-->>R: q_arch, q_recipe, hook, stability metrics
+    R->>R: scaling-aware attribution
     R->>W: split component rewards
 ```
 
@@ -125,14 +129,30 @@ def get_recipe(ctx):
     ...
 ```
 
-Optional hooks can customize training and inference:
+Optional hooks are first-class signals for training and inference attribution:
 
 - `configure_optimizer(model, recipe, ctx)`
-- `inference_logits(model, batch, ctx)` or `infer(model, batch, ctx)`
+- `inference_logits(model, batch, ctx)` or `infer(model, batch, ctx)`; `inference_logits` takes precedence when both exist.
 - `compute_loss(model, batch, ctx)`
 - `train_step(model, batch, optimizer, ctx)`
 
-See [Submission Format](docs/submissions.md) for complete examples.
+PRISM records hook presence and usage metrics, fingerprints hook-bearing files, and attributes training/inference ownership to the miner whose code produces a meaningful, scalable improvement. See [Submission Format](docs/submissions.md) for complete examples.
+
+---
+
+## Scaling-Law Evaluation Philosophy
+
+PRISM is designed to avoid rewarding signals that often fail at scale. Weak predictors include early MMLU-style benchmarks, subjective chat quality, final perplexity alone, single-seed results, and very short training runs without extrapolation.
+
+The strongest proxy signals are:
+
+- smooth loss curves without oscillation;
+- stable gradient norms without silent explosion;
+- absence of activation spikes, especially for paths that could scale beyond 10B parameters;
+- coherent improvements across model sizes, such as similar gains at 125M, 350M, and 1B proxy scales;
+- depth, sequence, and batch scaling tests that expose residual-stream drift, MoE routing collapse, KV-cache degradation, normalization failures, overflow, NaNs, and gradient-noise problems.
+
+See [Scaling Evaluation](docs/scaling.md) for the complete scaling policy.
 
 ---
 
@@ -184,5 +204,8 @@ PRISM currently supports:
 - Static source checks, optional LLM review, plagiarism review, and ZIP hardening.
 - Architecture-family ownership.
 - Training-variant ownership for existing architectures.
+- Semantic agent review for architecture and training attribution, including holds for low-confidence cases.
+- Hook usage metrics for optimizer, inference, loss, and train-step customization.
+- Scaling-aware evaluation guidance covering loss curves, gradients, activations, size/depth/sequence/batch extrapolation.
 - Dynamic absolute, relative, and z-score improvement thresholds.
 - Standard Platform `get_weights` integration.

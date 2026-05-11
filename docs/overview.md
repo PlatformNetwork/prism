@@ -4,13 +4,14 @@ PRISM is a decentralized neural architecture search challenge for Platform Netwo
 
 ## Purpose
 
-Frontier models are too expensive to train directly inside a subnet evaluation loop. PRISM evaluates compact proxy models instead. These smaller models make it possible to test architectural motifs, optimizer choices, loss functions, and inference hooks quickly while still producing useful signals about which ideas may scale.
+Frontier models are too expensive to train directly inside a subnet evaluation loop. PRISM evaluates compact proxy models instead. These smaller models make it possible to test architectural motifs, optimizer choices, loss functions, train-step behavior, and inference hooks quickly while still producing useful signals about which ideas may scale.
 
 PRISM is designed to answer questions such as:
 
 - Which architecture families learn fastest under fixed resource budgets?
 - Which training recipes improve stability or sample efficiency?
 - Which inference hooks improve quality without excessive latency?
+- Which optimizer, loss, and train-step changes remain stable as batch, depth, sequence length, and parameter count increase?
 - Which ideas remain strong across repeated small-model evaluations?
 
 ## Decentralized NAS
@@ -61,6 +62,30 @@ PRISM evaluations are intentionally small but structured:
 - controlled resource limits;
 - repeated metrics support;
 - architecture and recipe scores;
+- hook usage metrics for optimizer, inference, loss, and training-step code;
+- scaling-law signals across loss smoothness, gradient stability, activation behavior, model size, depth, sequence length, and batch growth;
 - dynamic thresholds to filter out noise.
 
 The result is a practical decentralized research loop for finding ideas that may be worth testing at larger scale.
+
+## Signals That Matter for Scaling
+
+PRISM is explicitly designed to reduce the risk of rewarding ideas that only look good at tiny scale. Poor predictors include:
+
+- early benchmark scores such as small-run MMLU proxies;
+- subjective chat quality;
+- final perplexity alone;
+- a single seed;
+- extremely short training runs without extrapolation.
+
+Better predictors include:
+
+- smooth loss curves with no oscillation;
+- stable gradient norms;
+- no activation spikes;
+- consistent improvement across model sizes;
+- depth-scaling behavior;
+- sequence-scaling behavior;
+- batch-scaling behavior and gradient-noise stability.
+
+See [Scaling Evaluation](scaling.md) for the full policy.

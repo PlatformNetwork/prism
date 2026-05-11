@@ -15,7 +15,9 @@ flowchart LR
     LLM --> Broker[Docker Broker]
     Broker --> Eval[GPU Evaluator]
     Eval --> Scores[Scores]
-    Scores --> Weights[get_weights]
+    Scores --> Semantic[Semantic Attribution]
+    Semantic --> Holds[Review Holds]
+    Semantic --> Weights[get_weights]
 ```
 
 ## Main Components
@@ -26,6 +28,8 @@ flowchart LR
 | Repository | SQLite persistence for submissions, scores, sources, ownership, assignments |
 | Worker | Claims pending submissions, reviews code, dispatches evaluation, finalizes scores |
 | Component parser | Reads `prism.yaml`, separates architecture and training files, computes fingerprints |
+| Semantic signatures | Records hook metadata, call graphs, summaries, and Mermaid sketches for attribution |
+| Component agent | Compares submissions against known families and variants, then decides new/existing/transfer/hold/reject |
 | Container evaluator | Writes the project into a temporary workspace and runs it in an isolated container |
 | Weights module | Converts architecture/training ownership into Platform-compatible hotkey weights |
 
@@ -67,7 +71,36 @@ PRISM stores state in SQLite. Important tables include:
 - `architecture_families`
 - `training_variants`
 - `component_scores`
+- `component_signatures`
+- `component_agent_reviews`
+- `component_review_holds`
+- `ownership_events`
 - `evaluation_assignments`
+
+`component_signatures` preserves deterministic and semantic views of each project. `component_agent_reviews` stores the ownership decision, confidence, and candidate match. `component_review_holds` keeps low-confidence attribution cases out of rewards until an operator resolves them. `ownership_events` records accepted ownership changes and transfers.
+
+## Semantic Attribution Flow
+
+After GPU evaluation, PRISM builds architecture and training signatures from the submitted project:
+
+- source fingerprints and behavior fingerprints;
+- architecture and training call graphs;
+- first-class hook metadata for `configure_optimizer`, `inference_logits` / `infer`, `compute_loss`, and `train_step`;
+- architecture/training summaries;
+- optional Mermaid sketches for review.
+
+The component agent compares those signatures against existing architecture families and training variants. It can classify the submission as a new contribution, an existing duplicate, a major transfer-worthy improvement, a rejection, or a hold for manual review.
+
+```mermaid
+flowchart LR
+    Eval[GPU Metrics] --> Sig[Semantic Signature]
+    Sig --> Candidates[Candidate Families and Variants]
+    Candidates --> Agent[Component Agent]
+    Agent -->|new/existing/transfer| Ownership[Ownership Update]
+    Agent -->|hold| Hold[Review Hold]
+    Agent -->|reject| Reject[Rejected Submission]
+    Ownership --> Weights[get_weights]
+```
 
 ## Master and Validator Modes
 
@@ -94,5 +127,7 @@ Submissions can end in one of these states:
 - `completed`
 - `failed`
 - `rejected`
+- `held`
 
 Rejected submissions fail review or contract validation. Failed submissions passed initial checks but failed evaluation or infrastructure execution.
+Held submissions require manual component-attribution resolution and do not affect weights until resolved.

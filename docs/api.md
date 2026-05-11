@@ -47,6 +47,8 @@ Returns status and score fields:
 }
 ```
 
+`status` can be `pending`, `running`, `completed`, `failed`, `rejected`, or `held`. Held submissions are awaiting manual component-attribution resolution and do not affect weights.
+
 ### `GET /v1/leaderboard`
 
 Returns ranked submissions for the current epoch.
@@ -117,6 +119,44 @@ Claims and processes one pending submission.
 ### `POST /internal/v1/worker/poll`
 
 Polls remote jobs. This is retained for compatibility with asynchronous job flows.
+
+### `GET /internal/v1/component-review/holds`
+
+Lists low-confidence semantic attribution holds.
+
+Response:
+
+```json
+[
+  {
+    "id": "...",
+    "submission_id": "...",
+    "status": "pending",
+    "reason": "low confidence component attribution",
+    "confidence": 0.61,
+    "created_at": "...",
+    "updated_at": "..."
+  }
+]
+```
+
+### `POST /internal/v1/component-review/holds/{hold_id}/resolve`
+
+Resolves a held submission with an operator attribution decision.
+
+Request:
+
+```json
+{
+  "architecture_action": "existing",
+  "training_action": "new",
+  "architecture_id": "7ec2c3a8-...",
+  "training_variant_id": null,
+  "reason": "manual review confirmed same architecture and new training hook"
+}
+```
+
+Allowed architecture actions are `new`, `existing`, `transfer`, and `reject`. Allowed training actions are `new`, `existing`, `transfer`, `reject`, and `none`.
 
 ## Validator Assignment Routes
 
