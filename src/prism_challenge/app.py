@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
-from typing import Annotated
+from typing import Annotated, SupportsFloat, cast
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 
@@ -11,6 +11,8 @@ from .config import PrismSettings, settings
 from .db import Database
 from .evaluator.interface import PrismContext
 from .models import (
+    ComponentReviewHoldDecision,
+    ComponentReviewHoldResponse,
     EvaluationAssignmentDecision,
     EvaluationAssignmentResponse,
     EvaluationResultCreate,
@@ -143,6 +145,44 @@ def create_app(app_settings: PrismSettings = settings) -> FastAPI:
     async def expire_assignments() -> dict[str, list[str]]:
         return {"expired_submission_ids": await worker.expire_assignments()}
 
+    @app.get(
+        "/internal/v1/component-review/holds",
+        response_model=list[ComponentReviewHoldResponse],
+        dependencies=[Depends(authenticate_internal)],
+    )
+    async def component_review_holds() -> list[ComponentReviewHoldResponse]:
+        return [
+            ComponentReviewHoldResponse(
+                id=str(row["id"]),
+                submission_id=str(row["submission_id"]),
+                status=str(row["status"]),
+                reason=str(row["reason"]),
+                confidence=float(cast(SupportsFloat, row["confidence"])),
+                created_at=_parse_dt(str(row["created_at"])),
+                updated_at=_parse_dt(str(row["updated_at"])),
+            )
+            for row in await repository.list_component_review_holds()
+        ]
+
+    @app.post(
+        "/internal/v1/component-review/holds/{hold_id}/resolve",
+        dependencies=[Depends(authenticate_internal)],
+    )
+    async def resolve_component_review_hold(
+        hold_id: str, decision: ComponentReviewHoldDecision
+    ) -> dict[str, object]:
+        try:
+            return await repository.resolve_component_hold(
+                hold_id=hold_id,
+                architecture_action=decision.architecture_action,
+                training_action=decision.training_action,
+                architecture_id=decision.architecture_id,
+                training_variant_id=decision.training_variant_id,
+                reason=decision.reason or "manual component attribution resolution",
+            )
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
     return app
 
 
@@ -168,6 +208,12 @@ def _bridge_submission_create(
         filename=safe_filename,
         metadata={"content_type": content_type or "application/octet-stream", "bridge": True},
     )
+
+
+def _parse_dt(value: str):
+    from datetime import datetime
+
+    return datetime.fromisoformat(value)
 
 
 app = create_app()

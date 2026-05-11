@@ -280,19 +280,42 @@ model.to(device)
 seq = ctx.sequence_length
 batch_size = max(1, min(int(getattr(recipe, "batch_size", 1)), 2))
 tokens = torch.randint(0, ctx.vocab_size, (batch_size, seq), device=device)
+hooks_present = {
+    name: callable(getattr(module, name, None))
+    for name in (
+        "configure_optimizer",
+        "inference_logits",
+        "infer",
+        "compute_loss",
+        "train_step",
+    )
+}
+hook_usage = {
+    "configure_optimizer": False,
+    "inference_logits": False,
+    "infer": False,
+    "compute_loss": False,
+    "train_step": False,
+}
 
 def prism_batch(t):
     return PrismBatch(tokens=t[:, :-1], targets=t[:, 1:], metadata={})
 
 def logits_for(t):
-    custom = getattr(module, "inference_logits", None) or getattr(module, "infer", None)
-    if callable(custom):
-        return custom(model, prism_batch(t), ctx)
+    logits_hook = getattr(module, "inference_logits", None)
+    infer_hook = getattr(module, "infer", None)
+    if callable(logits_hook):
+        hook_usage["inference_logits"] = True
+        return logits_hook(model, prism_batch(t), ctx)
+    if callable(infer_hook):
+        hook_usage["infer"] = True
+        return infer_hook(model, prism_batch(t), ctx)
     return model(t[:, :-1])
 
 def loss_for(t):
     custom = getattr(module, "compute_loss", None)
     if callable(custom):
+        hook_usage["compute_loss"] = True
         return custom(model, prism_batch(t), ctx)
     logits = logits_for(t)
     vocab = logits.shape[-1]
@@ -300,6 +323,7 @@ def loss_for(t):
 
 custom_opt = getattr(module, "configure_optimizer", None)
 if callable(custom_opt):
+    hook_usage["configure_optimizer"] = True
     optimizer = custom_opt(model, recipe, ctx)
 else:
     trainable = [p for p in model.parameters() if p.requires_grad]
@@ -314,6 +338,7 @@ for _ in range(3):
     batch = torch.randint(0, ctx.vocab_size, (batch_size, seq), device=device)
     custom_step = getattr(module, "train_step", None)
     if callable(custom_step):
+        hook_usage["train_step"] = True
         loss = custom_step(model, prism_batch(batch), optimizer, ctx)
     else:
         optimizer.zero_grad(set_to_none=True)
@@ -335,6 +360,16 @@ metrics = {
     "eval_loss": final_loss,
     "val_loss": final_loss,
     "parameter_count": float(params),
+    "hook.configure_optimizer.present": float(hooks_present["configure_optimizer"]),
+    "hook.inference_logits.present": float(hooks_present["inference_logits"]),
+    "hook.infer.present": float(hooks_present["infer"]),
+    "hook.compute_loss.present": float(hooks_present["compute_loss"]),
+    "hook.train_step.present": float(hooks_present["train_step"]),
+    "hook.configure_optimizer.used": float(hook_usage["configure_optimizer"]),
+    "hook.inference_logits.used": float(hook_usage["inference_logits"]),
+    "hook.infer.used": float(hook_usage["infer"]),
+    "hook.compute_loss.used": float(hook_usage["compute_loss"]),
+    "hook.train_step.used": float(hook_usage["train_step"]),
 }
 print("PRISM_METRICS_JSON=" + json.dumps(metrics, separators=(",", ":")))
 """

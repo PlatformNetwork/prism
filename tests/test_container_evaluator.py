@@ -86,3 +86,17 @@ def test_parse_metrics_rejects_invalid_output() -> None:
         _parse_metrics('PRISM_METRICS_JSON={"q_recipe":0.9}')
     with pytest.raises(RuntimeError, match="did not return metrics"):
         _parse_metrics("no metrics here")
+
+
+def test_parse_metrics_preserves_hook_usage_metrics() -> None:
+    metrics = _parse_metrics(
+        'PRISM_METRICS_JSON={"q_arch":0.5,'
+        '"hook.configure_optimizer.used":1,'
+        '"hook.inference_logits.used":1,'
+        '"hook.compute_loss.used":1,'
+        '"hook.train_step.used":1}\n'
+    )
+    assert metrics["hook.configure_optimizer.used"] == 1.0
+    assert metrics["hook.inference_logits.used"] == 1.0
+    assert metrics["hook.compute_loss.used"] == 1.0
+    assert metrics["hook.train_step.used"] == 1.0

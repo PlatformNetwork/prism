@@ -11,6 +11,14 @@ from .config import PrismSettings
 from .db import dumps, loads
 from .evaluator import llm_review, source_similarity
 from .evaluator.anti_cheat import evaluate_anti_cheat
+from .evaluator.component_agents import (
+    ComponentOwnershipDecision,
+    SemanticOwnershipAgent,
+)
+from .evaluator.component_signatures import (
+    ComponentSemanticSignature,
+    build_semantic_signature,
+)
 from .evaluator.components import (
     PrismComponentFingerprints,
     PrismProjectComponents,
@@ -58,6 +66,8 @@ class StaticReviewOutcome:
 class ComponentReview:
     components: PrismProjectComponents
     fingerprints: PrismComponentFingerprints
+    semantic_signature: ComponentSemanticSignature
+    ownership_decision: ComponentOwnershipDecision | None = None
 
 
 class PrismWorker:
@@ -122,7 +132,7 @@ class PrismWorker:
                 return None
             snapshot = self._snapshot_from_submission(code, filename, metadata)
             component_review = self._component_review(snapshot)
-            report = inspect_code(review.code)
+            report = self._inspect_project_snapshot(snapshot, review.code)
         except Exception as exc:
             await self._reject_submission(submission_id, str(exc))
             return None
@@ -477,9 +487,82 @@ class PrismWorker:
 
     def _component_review(self, snapshot: source_similarity.SourceSnapshot) -> ComponentReview:
         components = project_components(snapshot)
+        fingerprints = component_fingerprints(components)
         return ComponentReview(
             components=components,
-            fingerprints=component_fingerprints(components),
+            fingerprints=fingerprints,
+            semantic_signature=build_semantic_signature(components, fingerprints),
+        )
+
+    async def _component_ownership_review(self, review: ComponentReview) -> ComponentReview:
+        if not self.settings.component_agent_enabled:
+            decision = ComponentOwnershipDecision(
+                architecture_action="existing" if review.components.architecture_id else "new",
+                architecture_confidence=1.0,
+                training_action="none" if review.components.kind == "architecture_only" else "new",
+                training_confidence=1.0,
+                matched_architecture_id=review.components.architecture_id,
+                reason="component agent disabled",
+            )
+            return ComponentReview(
+                components=review.components,
+                fingerprints=review.fingerprints,
+                semantic_signature=review.semantic_signature,
+                ownership_decision=decision,
+            )
+        architectures, training = await self.repository.component_candidates(
+            family_hash=review.fingerprints.family_hash,
+            requested_architecture_id=review.components.architecture_id,
+            limit=self.settings.component_agent_candidate_top_k,
+        )
+        decision = SemanticOwnershipAgent(
+            min_confidence=self.settings.component_agent_min_confidence,
+            same_threshold=self.settings.component_agent_same_threshold,
+            hold_threshold=self.settings.component_agent_hold_threshold,
+        ).decide(
+            signature=review.semantic_signature,
+            architecture_candidates=architectures,
+            training_candidates=training,
+            requested_architecture_id=review.components.architecture_id,
+        )
+        if self.settings.component_hold_low_confidence and not decision.held:
+            decision = self._hold_low_confidence_decision(decision)
+        return ComponentReview(
+            components=review.components,
+            fingerprints=review.fingerprints,
+            semantic_signature=review.semantic_signature,
+            ownership_decision=decision,
+        )
+
+    def _hold_low_confidence_decision(
+        self, decision: ComponentOwnershipDecision
+    ) -> ComponentOwnershipDecision:
+        arch_action = decision.architecture_action
+        train_action = decision.training_action
+        reason = decision.reason
+        if (
+            arch_action in {"existing", "transfer"}
+            and decision.architecture_confidence < self.settings.component_agent_min_confidence
+        ):
+            arch_action = "hold"
+            reason = f"{reason}; low architecture confidence"
+        if (
+            train_action in {"existing", "transfer"}
+            and decision.training_confidence < self.settings.component_agent_min_confidence
+        ):
+            train_action = "hold"
+            reason = f"{reason}; low training confidence"
+        if arch_action == decision.architecture_action and train_action == decision.training_action:
+            return decision
+        return ComponentOwnershipDecision(
+            architecture_action=arch_action,
+            architecture_confidence=decision.architecture_confidence,
+            training_action=train_action,
+            training_confidence=decision.training_confidence,
+            matched_architecture_id=decision.matched_architecture_id,
+            matched_training_variant_id=decision.matched_training_variant_id,
+            reason=reason,
+            raw=decision.raw,
         )
 
     def _entrypoint_code(self, snapshot: source_similarity.SourceSnapshot, entrypoint: str) -> str:
@@ -751,6 +834,9 @@ class PrismWorker:
                 (SubmissionStatus.COMPLETED.value, arch_hash, now_iso(), submission_id),
             )
         if self.settings.component_rewards_enabled and component_review is not None:
+            component_review = await self._component_ownership_review(component_review)
+            if component_review.ownership_decision is None:
+                raise RuntimeError("component ownership decision was not created")
             metric_mean = max(0.0, min(1.0, float(metrics.get("q_recipe", q_recipe))))
             metric_std = max(
                 0.0,
@@ -761,7 +847,7 @@ class PrismWorker:
                     )
                 ),
             )
-            await self.repository.record_component_result(
+            component_result = await self.repository.record_component_result(
                 submission_id=submission_id,
                 project_kind=component_review.components.kind,
                 family_hash=component_review.fingerprints.family_hash,
@@ -780,8 +866,37 @@ class PrismWorker:
                 training_delta_abs=self.settings.training_improvement_min_delta_abs,
                 training_delta_rel=self.settings.training_improvement_min_delta_rel,
                 training_z_score=self.settings.training_improvement_z_score,
+                architecture_transfer_delta_abs=self.settings.architecture_transfer_min_delta_abs,
+                architecture_transfer_delta_rel=self.settings.architecture_transfer_min_delta_rel,
+                training_transfer_delta_abs=self.settings.training_transfer_min_delta_abs,
+                training_transfer_delta_rel=self.settings.training_transfer_min_delta_rel,
+                transfer_confidence=self.settings.component_agent_transfer_confidence,
                 metrics=metrics,
+                semantic_signature=component_review.semantic_signature,
+                ownership_decision=component_review.ownership_decision,
             )
+            if component_result.get("held"):
+                async with self.repository.database.connect() as conn:
+                    await conn.execute(
+                        "UPDATE submissions SET status=?, error=?, updated_at=? WHERE id=?",
+                        (
+                            SubmissionStatus.HELD.value,
+                            "component attribution held for review",
+                            now_iso(),
+                            submission_id,
+                        ),
+                    )
+            elif component_result.get("rejected"):
+                async with self.repository.database.connect() as conn:
+                    await conn.execute(
+                        "UPDATE submissions SET status=?, error=?, updated_at=? WHERE id=?",
+                        (
+                            SubmissionStatus.REJECTED.value,
+                            "component attribution rejected",
+                            now_iso(),
+                            submission_id,
+                        ),
+                    )
 
     async def poll_remote_jobs(self) -> list[str]:
         if self.lium is None:

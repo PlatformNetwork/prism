@@ -17,6 +17,7 @@ class SubmissionStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     REJECTED = "rejected"
+    HELD = "held"
 
 
 class JobLevel(StrEnum):
@@ -128,3 +129,21 @@ class TrainingVariantResponse(BaseModel):
     is_current_best: bool
     created_at: datetime
     updated_at: datetime
+
+
+class ComponentReviewHoldResponse(BaseModel):
+    id: str
+    submission_id: str
+    status: str
+    reason: str
+    confidence: float
+    created_at: datetime
+    updated_at: datetime
+
+
+class ComponentReviewHoldDecision(BaseModel):
+    architecture_action: str = Field(pattern=r"^(new|existing|transfer|reject)$")
+    training_action: str = Field(default="none", pattern=r"^(new|existing|transfer|reject|none)$")
+    architecture_id: str | None = None
+    training_variant_id: str | None = None
+    reason: str | None = None

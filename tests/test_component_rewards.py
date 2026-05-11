@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from prism_challenge.app import create_app
 from prism_challenge.config import PrismSettings
+from prism_challenge.evaluator.component_agents import ComponentOwnershipDecision
 from prism_challenge.sdk.executors.docker import DockerRunResult
 
 MODEL_CODE = """
@@ -161,3 +162,76 @@ def test_component_rewards_split_architecture_and_training(tmp_path, monkeypatch
         assert weights["architect"] > 0
         assert weights["trainer"] > 0
         assert "noisy" not in weights
+
+
+def test_low_confidence_component_review_is_held_and_resolved(tmp_path, monkeypatch):
+    def fake_run(self, spec, timeout_seconds):
+        return DockerRunResult(
+            container_name="prism-eval",
+            stdout='PRISM_METRICS_JSON={"q_arch":0.9,"q_recipe":0.7}\n',
+            stderr="",
+            returncode=0,
+        )
+
+    def hold_decision(self, **kwargs):
+        return ComponentOwnershipDecision(
+            architecture_action="hold",
+            architecture_confidence=0.4,
+            training_action="hold",
+            training_confidence=0.4,
+            reason="ambiguous semantic ownership",
+            raw={"test": "hold"},
+        )
+
+    monkeypatch.setattr("prism_challenge.evaluator.container.DockerExecutor.run", fake_run)
+    monkeypatch.setattr("prism_challenge.queue.SemanticOwnershipAgent.decide", hold_decision)
+    settings = PrismSettings(
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'holds.sqlite3'}",
+        shared_token="secret",
+        allow_insecure_signatures=True,
+        docker_enabled=True,
+        docker_backend="broker",
+        docker_broker_url="http://platform-docker-broker:8082",
+        docker_broker_token="secret",
+        plagiarism_enabled=False,
+    )
+
+    with TestClient(create_app(settings)) as client:
+        submission_id = _submit_zip(
+            client,
+            "held-miner",
+            "held-1",
+            _zip_payload(learning_rate=0.0003, kind="full"),
+        )
+        _process(client)
+        status = client.get(f"/v1/submissions/{submission_id}").json()
+        assert status["status"] == "held"
+
+        holds = client.get(
+            "/internal/v1/component-review/holds",
+            headers={"Authorization": "Bearer secret"},
+        ).json()
+        assert holds[0]["submission_id"] == submission_id
+
+        weights = client.get(
+            "/internal/v1/get_weights",
+            headers={"Authorization": "Bearer secret", "X-Platform-Challenge-Slug": "prism"},
+        ).json()["weights"]
+        assert weights == {}
+
+        resolved = client.post(
+            f"/internal/v1/component-review/holds/{holds[0]['id']}/resolve",
+            json={
+                "architecture_action": "new",
+                "training_action": "new",
+                "reason": "manual approval",
+            },
+            headers={"Authorization": "Bearer secret"},
+        )
+        assert resolved.status_code == 200, resolved.text
+        assert client.get(f"/v1/submissions/{submission_id}").json()["status"] == "completed"
+        weights = client.get(
+            "/internal/v1/get_weights",
+            headers={"Authorization": "Bearer secret", "X-Platform-Challenge-Slug": "prism"},
+        ).json()["weights"]
+        assert weights == {"held-miner": 1.0}

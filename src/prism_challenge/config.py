@@ -54,10 +54,24 @@ class PrismSettings(ChallengeSettings):
     component_rewards_enabled: bool = True
     architecture_reward_weight: float = Field(default=0.65, ge=0, le=1)
     training_reward_weight: float = Field(default=0.35, ge=0, le=1)
+    component_agent_enabled: bool = True
+    component_agent_required: bool = False
+    component_agent_model: str | None = None
+    component_agent_min_confidence: float = Field(default=0.72, ge=0, le=1)
+    component_agent_transfer_confidence: float = Field(default=0.86, ge=0, le=1)
+    component_agent_same_threshold: float = Field(default=0.82, ge=0, le=1)
+    component_agent_hold_threshold: float = Field(default=0.55, ge=0, le=1)
+    component_agent_candidate_top_k: int = Field(default=5, ge=1)
+    component_agent_mermaid_enabled: bool = True
+    component_hold_low_confidence: bool = True
     architecture_improvement_min_delta_abs: float = Field(default=0.01, ge=0)
     architecture_improvement_min_delta_rel: float = Field(default=0.005, ge=0)
+    architecture_transfer_min_delta_abs: float = Field(default=0.08, ge=0)
+    architecture_transfer_min_delta_rel: float = Field(default=0.05, ge=0)
     training_improvement_min_delta_abs: float = Field(default=0.02, ge=0)
     training_improvement_min_delta_rel: float = Field(default=0.005, ge=0)
+    training_transfer_min_delta_abs: float = Field(default=0.05, ge=0)
+    training_transfer_min_delta_rel: float = Field(default=0.03, ge=0)
     training_improvement_z_score: float = Field(default=1.0, ge=0)
     training_metric_default_std: float = Field(default=0.0, ge=0)
     component_eval_seed_count: int = Field(default=1, ge=1)
