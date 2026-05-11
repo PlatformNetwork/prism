@@ -8,6 +8,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-challenge-009688.svg)](https://fastapi.tiangolo.com/)
+[![License](https://img.shields.io/github/license/PlatformNetwork/prism)](https://github.com/PlatformNetwork/prism/blob/main/LICENSE)
 [![Bittensor](https://img.shields.io/badge/Bittensor-subnet-black.svg)](https://bittensor.com/)
 [![Platform](https://img.shields.io/badge/Platform-Network-6f42c1.svg)](https://platform.network)
 
@@ -209,3 +210,9 @@ PRISM currently supports:
 - Scaling-aware evaluation guidance covering loss curves, gradients, activations, size/depth/sequence/batch extrapolation.
 - Dynamic absolute, relative, and z-score improvement thresholds.
 - Standard Platform `get_weights` integration.
+
+---
+
+## License
+
+Apache-2.0
