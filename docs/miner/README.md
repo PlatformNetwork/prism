@@ -2,14 +2,11 @@
 
 ## Purpose
 
-PRISM rewards miners for discovering model architectures and training variants that show useful
-learning, stability, and scaling behavior. Your submission can introduce a new architecture family
-or improve the training, inference, loss, or optimizer behavior of an existing family.
+PRISM rewards miners for discovering model architectures and training variants that show useful learning, stability, and scaling behavior. Your submission can introduce a new architecture family, improve training for an existing family, or do both in one full submission.
 
 ## Miner Flow
 
-1. Decide whether you are submitting a full architecture, architecture-only variant, or training
-   improvement for an existing architecture.
+1. Decide whether you are submitting `full`, `architecture_only`, or `training_for_arch` work.
 2. Build a project bundle that follows the PRISM contract.
 3. Sign and submit the bundle with your miner hotkey.
 4. Track evaluation status and leaderboard movement.
@@ -24,8 +21,7 @@ or improve the training, inference, loss, or optimizer behavior of an existing f
 | `architecture_only` | Submit a model architecture without claiming a training variant. |
 | `training_for_arch` | Improve optimizer, loss, inference, or train-step behavior for an existing architecture family. |
 
-Training-only submissions must point to the target architecture family and must not silently change
-the architecture itself.
+Training-only submissions must point to the target architecture family and must not silently change the architecture itself.
 
 ## Project Manifest
 
@@ -65,23 +61,38 @@ def train_step(model, batch, optimizer, ctx):
     ...
 ```
 
+## Artifact Manifest
+
+Evaluators write `prism_run_manifest.v1.json`. It includes `architecture_graph.json`, `architecture_metadata.v1.json`, run logs, optional metrics artifacts, dataset fingerprints, GPU counts, diagnostics, loss comparability fields, benchmark metadata, and score eligibility flags.
+
+Do not try to make Mermaid text the canonical architecture identity. PRISM derives Mermaid from the canonical graph for review and display.
+
 ## Context And Limits
 
 `ctx` exposes the metadata and limits needed to build a valid model:
 
-- vocabulary size;
-- sequence length;
-- maximum layers;
-- maximum parameters;
-- deterministic seed;
-- evaluation budget metadata.
+* vocabulary size
+* sequence length
+* maximum layers
+* maximum parameters
+* deterministic seed
+* evaluation budget metadata
 
-Avoid hard-coding one fixed tensor shape, batch size, sequence length, or parameter budget. PRISM
-tests whether the idea can survive scaling probes, not whether it wins one tiny run.
+Avoid hard-coding one tensor shape, batch size, sequence length, or parameter budget. PRISM tests whether the idea can survive scaling probes, not whether it wins one tiny run.
+
+## Local Smoke Check
+
+Validators can run a local CPU smoke check for wiring:
+
+```bash
+pytest tests/test_local_cpu_smoke_eval.py -q
+```
+
+This command uses a tiny FineWeb-Edu fixture and sets `validation.score_eligible=false`. It does not run official full-scale training and does not create an official score.
 
 ## Submitting Work
 
-Submit through the public submission route:
+Submit through the public submission route when public submissions are enabled:
 
 ```http
 POST /v1/submissions
@@ -100,78 +111,44 @@ Content-Type: application/json
 
 Submission rules:
 
-- The miner hotkey must match the signature.
-- Timestamps and nonces protect against replay.
-- Submissions must stay within the configured size limit.
-- Unsafe imports, network access, arbitrary filesystem access, and suspicious code paths can be
-  rejected.
-- Low-confidence ownership transfers can be held for review.
-
-## Tracking Results
-
-Read submission status:
-
-```http
-GET /v1/submissions/{submission_id}
-```
-
-Read current leaderboard:
-
-```http
-GET /v1/leaderboard
-```
-
-Read architecture families:
-
-```http
-GET /v1/architectures
-```
-
-Read training variants:
-
-```http
-GET /v1/training-variants
-```
-
-Read the active epoch:
-
-```http
-GET /v1/epochs/current
-```
+* The miner hotkey must match the signature.
+* Timestamps and nonces protect against replay.
+* Submissions must stay within the configured size limit.
+* Unsafe imports, network access, arbitrary filesystem access, and suspicious code paths can be rejected.
+* Suspicion without deterministic evidence can be quarantined or held for review.
 
 ## Scoring
 
-PRISM combines architecture quality and recipe quality:
+Defaults are:
 
-```text
-S_prism = 0.7 * Q_arch + 0.3 * Q_recipe
-```
+| Score or pool | Default |
+| --- | ---: |
+| Final score blend | 70% architecture, 30% recipe |
+| Reward pools | 60% architecture ownership, 40% training ownership |
 
-Component rewards can split final credit between architecture owners and training owners. This lets
-one miner discover a useful family while another miner earns rewards for a genuine optimizer, loss,
-inference, or training-step improvement.
+SQL runtime config can override supported policy values. Official architecture scoring uses reference-recipe architecture signals, not raw final loss from a miner recipe. Training scoring uses architecture-normalized heldout improvement for the target family.
 
 ## What Improves Scores
 
 Strong submissions should show:
 
-- smooth loss curves;
-- stable gradient norms;
-- absence of activation spikes;
-- consistent improvements across model size and depth;
-- robust sequence-length and batch-scaling behavior;
-- useful training or inference hooks;
-- original structure rather than small edits to another miner's work.
+* smooth loss curves
+* stable gradient norms
+* absence of activation spikes
+* consistent improvements across model size and depth
+* stable sequence-length and batch-scaling behavior
+* useful training or inference hooks
+* original structure rather than small edits to another miner's work
 
 ## Miner Checklist
 
 Before submitting:
 
-- Choose the right submission kind.
-- Include a valid manifest when using a multi-file project.
-- Keep architecture and training files organized.
-- Confirm required entrypoints exist.
-- Keep the code deterministic and resource-aware.
-- Remove secrets, private endpoints, generated caches, and unrelated files.
-- Avoid copying existing architecture or training structure.
-- Make scaling behavior part of the design, not an afterthought.
+* Choose the right submission kind.
+* Include a valid manifest when using a multi-file project.
+* Keep architecture and training files organized.
+* Confirm required entrypoints exist.
+* Keep the code deterministic and resource-aware.
+* Remove secrets, private endpoints, generated caches, and unrelated files.
+* Avoid copying existing architecture or training structure.
+* Make scaling behavior part of the design.

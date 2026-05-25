@@ -2,60 +2,86 @@
 
 PRISM is built around a simple idea: a small-model challenge is useful only if it rewards signals that are likely to survive scale. The challenge should not overfit to one benchmark, one seed, one short run, or final perplexity alone.
 
+## FineWeb-Edu Modes
+
+PRISM uses the same `prism_run_manifest.v1.json` artifact contract across three evaluator modes.
+
+| Mode | Purpose | Official score eligible | Dataset contract |
+| --- | --- | --- | --- |
+| `local_cpu_smoke` | Local CPU wiring check using the tiny fixture at `tests/fixtures/tiny_fineweb_fixture.jsonl`. | No | `local_cpu_smoke_fixture` with train, validation, and test records. |
+| `gpu_proxy_eval` | Offline official proxy evaluation contract. | Yes | FineWeb-Edu `sample-10BT`, configured local shards, contamination report metadata. |
+| `full_scale_eval` | Offline official full-scale evaluation contract. | Yes | FineWeb-Edu `sample-100BT`, configured local shards, contamination report metadata. |
+
+CI does not run 10B or 100B token training. The local CPU smoke path validates evaluator wiring only and cannot produce an official score.
+
+Run the local smoke verification with:
+
+```bash
+pytest tests/test_local_cpu_smoke_eval.py -q
+```
+
+That command runs a tiny CPU fixture path. It does not run official full-scale training.
+
+## Loss Comparability
+
+Raw final loss is not a cross-architecture ranking signal. Official architecture scoring needs fixed-tokenizer or byte-normalized standardized loss metadata, plus `loss_comparable=true` for the main track. Architecture-baseline-only loss can help compare recipes inside one architecture family, but it does not rank architecture families against each other.
+
+Scientific scaling-law work explains this rule. **Scaling Laws for Neural Language Models** (Kaplan et al., 2020) models language-model cross-entropy as a function of parameters, dataset size, and compute. **Training Compute-Optimal Large Language Models** (Hoffmann et al., 2022) shows that a model can look weak simply because it is under-trained for its parameter count, or look strong because the token budget is better matched. PRISM therefore compares normalized loss trajectories and scaling slopes, not raw final loss in isolation.
+
+When tokenizers differ, `loss/token` can be misleading because token boundaries change the unit being scored. Official comparisons should use a fixed tokenizer or byte-normalized negative log-likelihood. That policy follows the general dataset and reporting guidance in **Datasheets for Datasets** (Gebru et al., 2018/2021) and the FineWeb documentation practices in **The FineWeb Datasets** (Penedo et al., 2024).
+
+## GPU Resource Policy
+
+Official score-eligible GPU runs use a fixed runtime profile. The default policy is:
+
+| Field | Default |
+| --- | --- |
+| `gpu_policy.max_gpu_count` | 8 |
+| `gpu_policy.actual_gpu_count` | 1 |
+| `gpu_policy.official_fixed_profile` | `true` |
+| `gpu_policy.allocation_policy` | `fixed_official_profile` |
+| `gpu_policy.autosplit_allowed_for_smoke` | `true` |
+
+Official scoring uses the fixed profile from SQL runtime config or its defaults. Autosplit is allowed only for non-scoring or development paths such as smoke runs. It is not an official scoring shortcut.
+
 ## Bad Scaling Predictors
 
 The following signals are weak predictors of frontier-scale performance when used alone:
 
 | Weak signal | Why it is risky |
 | --- | --- |
-| Early MMLU-style benchmark score | Too noisy and too dependent on tiny-run artifacts |
-| Subjective chat quality | Easy to overfit and hard to compare deterministically |
-| Final perplexity only | Hides instability, spikes, and bad extrapolation |
-| Single seed | Cannot separate improvement from luck |
-| Very short training without extrapolation | Rewards tricks that fail after longer training |
+| Early MMLU-style benchmark score | Too noisy and too dependent on tiny-run artifacts. |
+| Subjective chat quality | Easy to overfit and hard to compare deterministically. |
+| Final perplexity only | Hides instability, spikes, and bad extrapolation. |
+| Single seed | Cannot separate improvement from luck. |
+| Very short training without extrapolation | Rewards tricks that fail after longer training. |
 
 These signals may be logged, but they should not dominate reward decisions.
 
 ## Strong Scaling Predictors
 
-PRISM should prioritize signals that describe the training trajectory and stability envelope.
+PRISM prioritizes signals that describe the training trajectory and stability envelope.
 
-### 1. Smooth Loss Curve
+These predictors are strongest when measured at multiple token budgets. **Deep Learning Scaling is Predictable, Empirically** (Hestness et al., 2017) supports power-law learning trends, while **Broken Neural Scaling Laws** (Caballero et al., 2023) shows that curves can change regime. For that reason, PRISM treats slope as a high-value signal only when the manifest includes enough checkpoints to detect instability, plateaus, and broken extrapolation.
+
+### Smooth Loss Curve
 
 Good architectures and training recipes should produce smooth loss curves:
 
-- no recurring oscillation;
-- no repeated divergence/recovery pattern;
-- no late-training instability;
-- no hidden loss spikes masked by final loss.
+* no recurring oscillation
+* no repeated divergence and recovery pattern
+* no late-training instability
+* no hidden loss spikes masked by final loss
 
-### 2. Stable Gradient Norms
+### Stable Gradient Norms
 
-Gradient norms should remain stable as training progresses and as batch size changes.
+Gradient norms should remain stable as training progresses and as batch size changes. Silent gradient explosion is a strong negative signal even when final loss looks acceptable.
 
-Signals to track:
-
-- mean gradient norm;
-- max gradient norm;
-- gradient-norm variance;
-- gradient clipping frequency;
-- gradient noise scale.
-
-Silent gradient explosion is a strong negative signal even when final loss looks acceptable.
-
-### 3. No Activation Spikes
+### No Activation Spikes
 
 Activation spikes are critical for models that may scale beyond 10B parameters. A small model can hide activation problems that later become catastrophic.
 
-Signals to track:
-
-- activation max / RMS by layer;
-- spike frequency;
-- residual-stream drift;
-- normalization instability;
-- overflow or NaN events.
-
-### 4. Coherent Scaling Across Sizes
+### Coherent Scaling Across Sizes
 
 The strongest sign is consistent improvement across multiple proxy sizes. For example:
 
@@ -65,109 +91,26 @@ The strongest sign is consistent improvement across multiple proxy sizes. For ex
 1B:   +2%
 ```
 
-This is far more valuable than a large gain at one size and a regression elsewhere.
-
-## Common Failure at Larger Scale
-
-Many architectures look better at 1B but become unstable at 30B+. Common reasons:
-
-- activation variance explodes;
-- residual streams drift;
-- MoE routing collapses;
-- KV cache behavior degrades;
-- normalization no longer scales;
-- optimizer behavior changes with batch size;
-- longer context exposes attention or memory-path failures.
-
-PRISM’s evaluation policy should reduce this risk by probing the architecture and training code along multiple scaling axes.
+This is more valuable than a large gain at one size and a regression elsewhere.
 
 ## Required Scaling Probes
 
-### A. Depth Scaling
+| Probe | What it checks |
+| --- | --- |
+| Depth scaling | Stability under deeper and narrower, shallower and wider, and higher layer-count variants. |
+| Sequence scaling | Attention stability, positional behavior, KV-cache behavior, memory, and latency under longer context. |
+| Batch scaling | Loss spikes, NaNs, overflow, gradient noise scale, optimizer instability, and clipping frequency. |
 
-Test the same approximate compute budget with:
+PRISM's long-term goal is to produce a global view of each architecture and training recipe: not just whether it wins a small benchmark, but whether its learning dynamics suggest that it can scale.
 
-- deeper and narrower variants;
-- shallower and wider variants;
-- increasing layer count under controlled parameter limits.
+## Scientific Reference Profiles
 
-If the submission breaks when depth increases, it is a poor scaling candidate even if the small shallow model is strong.
-
-### B. Sequence Scaling
-
-Evaluate context behavior across increasing sequence lengths:
-
-```text
-2k -> 8k -> 32k
-```
-
-Even with limited training, this can reveal:
-
-- attention instability;
-- KV-cache degradation;
-- positional encoding failure;
-- memory or latency cliffs.
-
-### C. Batch Scaling
-
-Increase global batch progressively and track:
-
-- loss spikes;
-- NaNs;
-- overflow;
-- gradient noise scale;
-- optimizer instability;
-- clipping frequency.
-
-Stable batch scaling is a strong sign that a recipe may survive larger training runs.
-
-## Recommended Metric Families
-
-Evaluator containers can report these metrics when available:
-
-```json
-{
-  "loss_smoothness": 0.94,
-  "loss_spike_count": 0,
-  "grad_norm_mean": 1.8,
-  "grad_norm_max": 4.2,
-  "activation_spike_rate": 0.0,
-  "scaling_consistency": 0.91,
-  "depth_scaling_score": 0.88,
-  "sequence_scaling_score": 0.84,
-  "batch_scaling_score": 0.9,
-  "nan_count": 0,
-  "overflow_count": 0
-}
-```
-
-## Scoring Guidance
-
-Good PRISM rewards should prefer:
-
-- modest but consistent gains across scales;
-- stable loss and gradient behavior;
-- low activation-spike risk;
-- improvements that remain visible under depth, sequence, and batch probes.
-
-They should penalize:
-
-- one-off gains at a single model size;
-- final-loss-only improvements with unstable curves;
-- high variance across seeds;
-- improvements that vanish when batch, depth, or context length changes.
-
-## Evaluation Loop
-
-```mermaid
-flowchart LR
-    Sub[Submission] --> Size[Size Probes]
-    Size --> Depth[Depth Probes]
-    Depth --> Seq[Sequence Probes]
-    Seq --> Batch[Batch Probes]
-    Batch --> Stable[Stability Metrics]
-    Stable --> Agent[Semantic Review]
-    Agent --> Reward[Reward Decision]
-```
-
-PRISM’s long-term goal is to produce a global view of each architecture and training recipe: not just whether it wins a small benchmark, but whether its learning dynamics suggest that it can scale.
+| Profile | Study | Operational lesson |
+| --- | --- | --- |
+| Loss vs compute | Kaplan et al., 2020, *Scaling Laws for Neural Language Models* | Fit comparable loss curves rather than using one final checkpoint. |
+| Compute-optimal scaling | Hoffmann et al., 2022, *Training Compute-Optimal Large Language Models* | Compare models near matched parameter-token-compute regimes. |
+| Broken extrapolation | Caballero et al., 2023, *Broken Neural Scaling Laws* | Penalize unreliable slopes and curve-regime changes. |
+| Data-constrained scaling | Muennighoff et al., 2023, *Scaling Data-Constrained Language Models* | Track repeated data and flattening marginal returns. |
+| Repeated data risk | Hernandez et al., 2022, *Scaling Laws and Interpretability of Learning from Repeated Data* | Watch train/validation gaps and repeated-sample overfitting. |
+| Batch and optimizer dynamics | McCandlish et al., 2018, *An Empirical Model of Large-Batch Training* | Use gradient-noise scale and batch sensitivity as recipe diagnostics. |
+| FineWeb-Edu validity | Penedo et al., 2024, *The FineWeb Datasets* | Freeze shards, revisions, and contamination metadata for official modes. |
