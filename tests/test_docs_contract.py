@@ -158,6 +158,20 @@ def test_submission_docs_clarify_custom_training_boundaries() -> None:
         assert expected in combined
 
 
+def test_security_doc_clarifies_metric_review_limits() -> None:
+    security_doc = read_doc("docs/security.md")
+
+    for expected in (
+        "unsupported metric or calculation claims",
+        "artifacts, logs, manifests, dataset fingerprints, FLOPs, tokens, or parameter counts",
+        "LLM review can inspect metric calculation claims",
+        "LLM review does not replace deterministic manifest validation",
+        "does not claim to recompute every metric from raw artifacts",
+        "Rejection still requires deterministic evidence",
+    ):
+        assert expected in security_doc
+
+
 
 def test_public_docs_do_not_claim_architecture_ownership_transfer() -> None:
     public_docs = [

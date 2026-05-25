@@ -59,8 +59,11 @@ The default review intent is to catch code that attempts:
 * network escape
 * hidden behavior unrelated to the model contract
 * plagiarism or copied miner code
+* unsupported metric or calculation claims, including suspicious shortcuts that conflict with artifacts, logs, manifests, dataset fingerprints, FLOPs, tokens, or parameter counts
 
-LLM review can be advisory or required depending on operator configuration.
+LLM review can inspect metric calculation claims and compare them with submitted evidence, but it is not proof that every score is correct. The reviewer may flag inconsistencies between artifacts, run logs, manifests, dataset fingerprints, FLOPs, tokens, parameter counts, and reported metrics. Rejection still requires deterministic evidence.
+
+LLM review does not replace deterministic manifest validation. Manifest validation remains the primary mechanical gate for internal consistency, official scoring readiness, and checks such as matching parameter counts, tokens, FLOPs, GPU counts, and architecture graph hashes. PRISM does not rely on LLM review alone and does not claim to recompute every metric from raw artifacts during this policy step.
 
 ## Plagiarism, Similarity, and Quarantine
 
