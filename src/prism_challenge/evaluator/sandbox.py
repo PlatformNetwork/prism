@@ -77,8 +77,14 @@ OPTIONAL_CONTRACT_FUNCTIONS = {
     "infer",
     "compute_loss",
     "train_step",
+    "save_checkpoint",
+    "load_checkpoint",
 }
 CONTRACT_FUNCTIONS = REQUIRED_CONTRACT_FUNCTIONS | OPTIONAL_CONTRACT_FUNCTIONS
+CHECKPOINT_HOOK_SIGNATURES = {
+    "save_checkpoint": ("model", "checkpoint_dir", "ctx"),
+    "load_checkpoint": ("model", "checkpoint_dir", "ctx"),
+}
 
 
 @dataclass(frozen=True)
@@ -219,7 +225,7 @@ def validate_miner_contract(
                 explanation="top-level executable code is not allowed in Prism submissions",
             ),
         )
-    for name in CONTRACT_FUNCTIONS & defined:
+    for name in sorted(CONTRACT_FUNCTIONS & defined):
         fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
         if _has_varargs(fn):
             raise SandboxViolation(
@@ -230,6 +236,23 @@ def validate_miner_contract(
                     artifact_path=artifact_path,
                     rule_id="prism:contract",
                     explanation=f"contract function {name} may not use variable arguments",
+                ),
+            )
+        expected_signature = CHECKPOINT_HOOK_SIGNATURES.get(name)
+        if expected_signature is not None and not _has_exact_signature(
+            fn, expected_signature
+        ):
+            raise SandboxViolation(
+                f"{name} must have signature {name}({', '.join(expected_signature)})",
+                _evidence(
+                    code,
+                    fn,
+                    artifact_path=artifact_path,
+                    rule_id="prism:contract",
+                    explanation=(
+                        f"contract function {name} must have exact parameters: "
+                        f"{', '.join(expected_signature)}"
+                    ),
                 ),
             )
 
@@ -326,6 +349,13 @@ def _constant_assignment(node: ast.Assign | ast.AnnAssign) -> bool:
 
 def _has_varargs(node: ast.FunctionDef) -> bool:
     return node.args.vararg is not None or node.args.kwarg is not None
+
+
+def _has_exact_signature(node: ast.FunctionDef, expected: tuple[str, ...]) -> bool:
+    args = node.args
+    if args.posonlyargs or args.kwonlyargs or args.defaults or args.kw_defaults:
+        return False
+    return tuple(arg.arg for arg in args.args) == expected
 
 
 def _node_name(node: ast.AST) -> str:

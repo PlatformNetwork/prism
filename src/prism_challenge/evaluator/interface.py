@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 
@@ -11,6 +12,17 @@ class PrismContext:
     max_layers: int = 96
     max_parameters: int = 150_000_000
     seed: int = 1337
+    checkpoint_dir: Path | None = None
+    resume_checkpoint_dir: Path | None = None
+    checkpoint_api_version: int = 1
+    attempt: int = 1
+    is_resume: bool = False
+    rank: int = 0
+    local_rank: int = 0
+    world_size: int = 1
+    distributed_backend: str | None = None
+    device: str = "cpu"
+    checkpoint_metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -43,6 +55,14 @@ class PrismModelModule(Protocol):
     def train_step(
         self, model: Any, batch: PrismBatch, optimizer: Any, ctx: PrismContext
     ) -> Any: ...
+
+    def save_checkpoint(
+        self, model: Any, checkpoint_dir: Path, ctx: PrismContext
+    ) -> str | dict[str, object] | None: ...
+
+    def load_checkpoint(
+        self, model: Any, checkpoint_dir: Path, ctx: PrismContext
+    ) -> dict[str, object] | None: ...
 
 
 def import_torch() -> Any:
