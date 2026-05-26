@@ -61,11 +61,21 @@ def compute_loss(model, batch, ctx):
 
 def train_step(model, batch, optimizer, ctx):
     ...
+
+def save_checkpoint(model, checkpoint_dir, ctx):
+    ...
+
+def load_checkpoint(model, checkpoint_dir, ctx):
+    ...
 ```
 
 `configure_optimizer` gives full optimizer and LR control. Use it for custom optimizers, parameter groups, schedulers, or learning rates that should not be reduced to evaluator fallback choices. Without that hook, the fallback optimizer may apply safe evaluator defaults/caps, including learning-rate caps.
 
-`train_step` can implement a fully custom update step. Use it when you need a training loop other than the evaluator default. It must return a loss tensor and stay within sandbox and resource limits.
+`train_step` can implement a fully custom update step. Use it when you need a training loop other than the evaluator default. It must return a loss tensor and stay within sandbox and resource limits. PRISM launches 1-8 GPU container runs with single-node torchrun, including `torchrun --standalone --nnodes=1 --nproc-per-node=1` for a 1 GPU run. When PRISM wraps default multi-process training with DDP, a custom `train_step` that bypasses the default loop must be DDP-safe and rank-aware.
+
+Use `save_checkpoint(model, checkpoint_dir, ctx)` and `load_checkpoint(model, checkpoint_dir, ctx)` only for model state inside the evaluator-provided checkpoint workspace. The checkpoint fields on `ctx` are `checkpoint_dir`, `resume_checkpoint_dir`, `checkpoint_api_version`, `attempt`, `is_resume`, `rank`, `local_rank`, `world_size`, `distributed_backend`, `device`, and `checkpoint_metadata`. `save_checkpoint` may return `None`, a checkpoint-dir-relative `str`, or the exact shape `{"path": str, "metadata": dict[str, object]}`. Return `None` only when no checkpoint artifact should be recorded; return a checkpoint-dir-relative `str` or the exact dict shape when PRISM should accept and record a produced checkpoint artifact. PRISM records accepted checkpoint artifacts through manifest paths under the run artifact root. External checkpoint paths and miner-selected resume sources are not supported. The workspace cap is decimal 10G, exactly `10_000_000_000` bytes.
+
+Evaluator resume in v1 is retry-only after eligible infrastructure or eviction failures. It does not resume sandbox failures, miner code failures, scoring failures, or policy failures.
 
 ## Artifact Manifest
 

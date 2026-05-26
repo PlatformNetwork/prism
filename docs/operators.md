@@ -55,6 +55,8 @@ PRISM_PLATFORM_EVAL_PIDS_LIMIT=512
 PRISM_DOCKER_NETWORK=none
 ```
 
+For broker-backed runs, PRISM sends only the official Platform SDK GPU field `gpu_count`. `gpu_count=None` or an omitted field is CPU-only; a positive integer is a GPU request. Platform owns `gpu_resource_name`, defaulting to `nvidia.com/gpu`, and Kubernetes broker mode maps positive counts to `resources.limits['nvidia.com/gpu']` unless Platform is configured with a different resource name. PRISM GPU device IDs are metadata for observability, not Kubernetes placement semantics. Single-GPU runs use `torchrun --standalone --nnodes=1 --nproc-per-node=1`; PRISM does not claim multi-node support.
+
 ## Review Configuration
 
 Recommended production review settings:

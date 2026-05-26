@@ -87,6 +87,12 @@ def compute_loss(model, batch, ctx):
 
 def train_step(model, batch, optimizer, ctx):
     ...
+
+def save_checkpoint(model, checkpoint_dir, ctx):
+    ...
+
+def load_checkpoint(model, checkpoint_dir, ctx):
+    ...
 ```
 
 | Hook | Purpose | Attribution |
@@ -96,12 +102,52 @@ def train_step(model, batch, optimizer, ctx):
 | `infer` | Fallback inference path when `inference_logits` is absent. | Training or inference owner |
 | `compute_loss` | Custom loss, auxiliary losses, regularization. | Training owner |
 | `train_step` | Fully custom update step. | Training owner |
+| `save_checkpoint` | Save model state into the evaluator-provided checkpoint workspace. | Training owner |
+| `load_checkpoint` | Load model state from an evaluator-approved retry checkpoint workspace. | Training owner |
 
 Use `configure_optimizer` when you need complete optimizer and LR control, including parameter groups, custom optimizer classes, scheduler setup, clipping wrappers, or learning rates outside evaluator defaults. If `configure_optimizer` is absent, the fallback optimizer may apply safe evaluator defaults/caps, including learning-rate caps, while still reading recipe metadata where allowed.
 
-Use `train_step` when the default `zero_grad`, `loss.backward`, gradient clipping, and `optimizer.step` loop is not enough. `train_step` can implement a fully custom update step, as long as it returns a valid loss tensor and stays within the sandbox and resource limits.
+Use `train_step` when the default `zero_grad`, `loss.backward`, gradient clipping, and `optimizer.step` loop is not enough. `train_step` can implement a fully custom update step, as long as it returns a valid loss tensor and stays within the sandbox and resource limits. PRISM launches 1-8 GPU container runs with single-node torchrun, including `torchrun --standalone --nnodes=1 --nproc-per-node=1` for a 1 GPU run. When PRISM launches multi-process torchrun/DDP, PRISM wraps the model, but custom `train_step` implementations are responsible for DDP-safe and rank-aware behavior if they bypass the default loop. PRISM does not support multi-node distributed training.
 
 If both `inference_logits` and `infer` exist, `inference_logits` takes precedence.
+
+## Checkpoint Hooks
+
+Submissions may define these exact optional hook signatures:
+
+```python
+def save_checkpoint(model, checkpoint_dir, ctx):
+    ...
+
+def load_checkpoint(model, checkpoint_dir, ctx):
+    ...
+```
+
+`checkpoint_dir` is an evaluator-owned directory. Save into that directory or a child path under it. Do not choose an external checkpoint path. `load_checkpoint` is called only when PRISM approves a retry resume source for the same submission, code, architecture, and recipe lineage. v1 resume is retry-only after eligible infrastructure or eviction failures, not sandbox failures, miner code failures, scoring failures, or policy failures. PRISM does not support arbitrary external checkpoint resume.
+
+Checkpoint and distributed fields on `ctx` are:
+
+* `checkpoint_dir`
+* `resume_checkpoint_dir`
+* `checkpoint_api_version`
+* `attempt`
+* `is_resume`
+* `rank`
+* `local_rank`
+* `world_size`
+* `distributed_backend`
+* `device`
+* `checkpoint_metadata`
+
+Accepted `save_checkpoint` return schemas are:
+
+* `None`, when no checkpoint artifact was produced for PRISM to record.
+* A checkpoint-dir-relative `str`, when the main checkpoint file or directory is below `checkpoint_dir` and should be accepted and recorded.
+* The exact shape `{"path": str, "metadata": dict[str, object]}`. `path` is checkpoint-dir-relative, and `metadata` contains JSON-compatible checkpoint metadata for an accepted and recorded checkpoint artifact.
+
+Writing files under `checkpoint_dir` is not enough for PRISM to record a produced checkpoint. Return a checkpoint-dir-relative `str` or the exact dict shape above when the hook creates a checkpoint artifact that should be accepted for manifest recording and retry resume.
+
+Absolute paths, `..` traversal, symlinks, and paths outside `checkpoint_dir` are rejected. PRISM records accepted checkpoint artifacts in `prism_run_manifest.v1.json` using artifact-root-relative manifest paths, not host paths. The checkpoint workspace cap is exactly decimal 10G, `10_000_000_000` bytes.
 
 ## Artifact Manifest
 

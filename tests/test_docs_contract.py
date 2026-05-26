@@ -152,11 +152,146 @@ def test_submission_docs_clarify_custom_training_boundaries() -> None:
         "configure_optimizer` gives full optimizer and LR control",
         "fallback optimizer may apply safe evaluator defaults/caps",
         "train_step` can implement a fully custom update step",
+        "custom `train_step` implementations are responsible for DDP-safe and rank-aware behavior",
         "training_for_arch` submission cannot silently change architecture family",
         "Submitted metrics are not free-form claims",
     ):
         assert expected in combined
 
+
+
+def test_checkpoint_hook_contract_docs_are_exact() -> None:
+    submissions_doc = read_doc("docs/submissions.md")
+    miner_doc = read_doc("docs/miner/README.md")
+    security_doc = read_doc("docs/security.md")
+    combined = f"{submissions_doc}\n{miner_doc}\n{security_doc}"
+
+    for expected in (
+        "save_checkpoint(model, checkpoint_dir, ctx)",
+        "load_checkpoint(model, checkpoint_dir, ctx)",
+        "`checkpoint_dir`",
+        "`resume_checkpoint_dir`",
+        "`checkpoint_api_version`",
+        "`attempt`",
+        "`is_resume`",
+        "`rank`",
+        "`local_rank`",
+        "`world_size`",
+        "`distributed_backend`",
+        "`device`",
+        "`checkpoint_metadata`",
+        "`None`, when no checkpoint artifact was produced for PRISM to record",
+        "A checkpoint-dir-relative `str`",
+        "should be accepted and recorded",
+        'The exact shape `{"path": str, "metadata": dict[str, object]}`',
+        "Writing files under `checkpoint_dir` is not enough for PRISM to record",
+        "Return `None` only when no checkpoint artifact should be recorded",
+        "return a checkpoint-dir-relative `str` or the exact dict shape",
+        "artifact-root-relative manifest paths",
+        "decimal 10G, `10_000_000_000` bytes",
+        "decimal 10G, exactly `10_000_000_000` bytes",
+        "retry-only after eligible infrastructure or eviction failures",
+        "same submission, code, architecture, and recipe lineage",
+    ):
+        assert expected in combined
+
+    forbidden_checkpoint_semantics = (
+        "`None`, when the hook writes its checkpoint files directly under `checkpoint_dir`",
+        "None, when the hook writes its checkpoint files directly under checkpoint_dir",
+    )
+    for phrase in forbidden_checkpoint_semantics:
+        assert phrase not in combined
+
+
+def test_distributed_docs_define_v1_single_node_scope() -> None:
+    submissions_doc = read_doc("docs/submissions.md")
+    miner_doc = read_doc("docs/miner/README.md")
+    scaling_doc = read_doc("docs/scaling.md")
+    security_doc = read_doc("docs/security.md")
+    combined = f"{submissions_doc}\n{miner_doc}\n{scaling_doc}\n{security_doc}"
+
+    for expected in (
+        "single-node only",
+        "Runs with 1-8 GPUs use single-node torchrun",
+        "torchrun --standalone --nnodes=1 --nproc-per-node=1",
+        "Requests above 8 GPUs are rejected",
+        "Rank 0 writes shared checkpoint and manifest artifacts",
+        "PRISM DDP-wraps default training",
+        "custom `train_step` implementations are responsible for DDP-safe and rank-aware behavior",
+        (
+            "Custom `train_step` implementations that bypass the default loop "
+            "must be DDP-safe and rank-aware"
+        ),
+        "does not support multi-node distributed training",
+        "command and environment support, not proof that every submission succeeds on 8 GPUs",
+    ):
+        assert expected in combined
+
+
+def test_public_docs_define_platform_gpu_broker_contract() -> None:
+    scaling_doc = read_doc("docs/scaling.md")
+    security_doc = read_doc("docs/security.md")
+    operators_doc = read_doc("docs/operators.md")
+    combined = f"{scaling_doc}\n{security_doc}\n{operators_doc}"
+
+    for expected in (
+        "`gpu_count=None` or an omitted `gpu_count` means CPU-only",
+        "A positive integer requests that many GPUs",
+        "Platform owns `gpu_resource_name`",
+        "PRISM does not pass `gpu_resource_name`",
+        "resources.limits['nvidia.com/gpu']",
+        "Device IDs are not Kubernetes placement semantics",
+        "device IDs remain metadata",
+        "torchrun --standalone --nnodes=1 --nproc-per-node=1",
+        "does not claim multi-node support",
+        "Network isolation depends on the cluster CNI",
+    ):
+        assert expected in combined
+
+    forbidden_claims = (
+        "device IDs are Kubernetes placement semantics",
+        "multi-node distributed training is supported",
+        "supports arbitrary TPU",
+        "supports AMD accelerator abstraction",
+    )
+    combined_lower = combined.lower()
+    for phrase in forbidden_claims:
+        assert phrase.lower() not in combined_lower
+
+
+def test_checkpoint_docs_do_not_overpromise_unsupported_scope() -> None:
+    public_docs = [
+        "README.md",
+        "docs/submissions.md",
+        "docs/miner/README.md",
+        "docs/scaling.md",
+        "docs/security.md",
+    ]
+    combined = "\n".join(read_doc(path) for path in public_docs)
+    combined_lower = combined.lower()
+
+    for expected in (
+        "PRISM does not support arbitrary external checkpoint resume",
+        "External checkpoint paths and miner-selected resume sources are not supported",
+        "Miners cannot select arbitrary external checkpoint paths or resume sources",
+        "does not support object-store or cloud checkpoint upload",
+        "does not support multi-node distributed training",
+    ):
+        assert expected in combined
+
+    forbidden_phrases = (
+        ".omo",
+        "Prometheus",
+        "Metis",
+        "workflow artifacts",
+        "arbitrary external checkpoint resume is supported",
+        "miner-selected external checkpoint paths are supported",
+        "object-store checkpoint upload is supported",
+        "cloud checkpoint upload is supported",
+        "multi-node distributed training is supported",
+    )
+    for phrase in forbidden_phrases:
+        assert phrase.lower() not in combined_lower
 
 def test_security_doc_clarifies_metric_review_limits() -> None:
     security_doc = read_doc("docs/security.md")

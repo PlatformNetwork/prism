@@ -44,6 +44,20 @@ Official score-eligible GPU runs use a fixed runtime profile. The default policy
 
 Official scoring uses the fixed profile from SQL runtime config or its defaults. Autosplit is allowed only for non-scoring or development paths such as smoke runs. It is not an official scoring shortcut.
 
+### Broker GPU Contract
+
+PRISM passes the actual lease size to the Platform broker as `gpu_count`. `gpu_count=None` or an omitted `gpu_count` means CPU-only execution and must not create a Kubernetes GPU resource limit. A positive integer requests that many GPUs. Invalid values such as `0`, negatives, booleans, strings, or floats fail validation before placement.
+
+Platform owns `gpu_resource_name`; PRISM does not pass it. In Kubernetes broker mode, Platform maps a positive `gpu_count` to `resources.limits['nvidia.com/gpu']` by default, or to the configured Platform-owned resource name. Prism GPU environment variables, labels, payload metadata, and device IDs are observability and backward-compatibility metadata only. Device IDs are not Kubernetes placement semantics, and this contract is not an arbitrary TPU, AMD, or custom accelerator abstraction.
+
+## Single-Node Torchrun And DDP
+
+PRISM's distributed v1 scope is single-node only. Runs with 1-8 GPUs use single-node torchrun with one process per GPU, including `torchrun --standalone --nnodes=1 --nproc-per-node=1` for a 1 GPU run. Requests above 8 GPUs are rejected. This documents command and environment support, not proof that every submission succeeds on 8 GPUs.
+
+PRISM DDP-wraps default training before running the default loop. Rank 0 writes shared checkpoint and manifest artifacts, including `prism_run_manifest.v1.json`; other ranks participate in training and synchronization without writing those shared artifacts. Custom `train_step` implementations that bypass the default loop must be DDP-safe and rank-aware.
+
+PRISM does not support multi-node distributed training in v1.
+
 ## Bad Scaling Predictors
 
 The following signals are weak predictors of frontier-scale performance when used alone:

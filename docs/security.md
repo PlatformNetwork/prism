@@ -104,7 +104,15 @@ Container limits include:
 * read-only runtime option
 * optional GPU type and count
 
-Official score-eligible GPU jobs use the fixed official GPU profile from SQL runtime config or defaults, with a maximum of 8 GPUs. Autosplit is for non-scoring or development paths only.
+Official score-eligible GPU jobs use the fixed official GPU profile from SQL runtime config or defaults, with a maximum of 8 GPUs. Autosplit is for non-scoring or development paths only. PRISM sends the actual lease size as `gpu_count`: `None` or omitted means CPU-only, while a positive integer requests GPUs. Platform owns `gpu_resource_name` and maps the count to Kubernetes `resources.limits['nvidia.com/gpu']` by default. PRISM does not pass `gpu_resource_name`; device IDs remain metadata for logs and manifests, not Kubernetes placement semantics. Network isolation depends on the cluster CNI and the NetworkPolicy enforcement configured by Platform and the operator.
+
+## Checkpoint Workspace Security
+
+Checkpoint hooks write only inside an evaluator-owned checkpoint workspace. PRISM rejects absolute paths, `..` traversal, symlinks, and any checkpoint path outside that workspace. The checkpoint workspace cap is decimal 10G, exactly `10_000_000_000` bytes.
+
+Evaluator resume in v1 is retry-only after eligible infrastructure or eviction failures, with validated same submission, code, architecture, and recipe lineage. It is not used for sandbox failures, miner code failures, scoring failures, or policy failures. Miners cannot select arbitrary external checkpoint paths or resume sources, and PRISM does not support object-store or cloud checkpoint upload in this contract.
+
+Distributed execution is single-node only in v1. PRISM launches 1-8 GPU container runs with single-node torchrun, including `torchrun --standalone --nnodes=1 --nproc-per-node=1` for a 1 GPU run. PRISM does not support multi-node distributed training.
 
 ## Scientific Security References
 
