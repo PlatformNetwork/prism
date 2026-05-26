@@ -173,6 +173,7 @@ class PrismSettings(ChallengeSettings):
     platform_eval_gpu_server: str | None = None
     platform_eval_gpu_device_ids: tuple[str, ...] = ()
     platform_eval_task: str = "architecture"
+    platform_eval_artifact_root: Path = Path("/tmp/prism-eval-artifacts")
     validator_hotkeys: tuple[str, ...] = ()
     validator_assignment_timeout_seconds: int = 900
     validator_assignment_max_attempts: int = 3

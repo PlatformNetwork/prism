@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, cast
@@ -11,6 +12,11 @@ from .config import PrismSettings
 from .db import dumps, loads
 from .evaluator import llm_review, source_similarity
 from .evaluator.anti_cheat import evaluate_anti_cheat
+from .evaluator.checkpoints import (
+    CheckpointWorkspaceError,
+    checkpoint_artifact_logical_size,
+    load_checkpoint_metadata,
+)
 from .evaluator.component_agents import (
     ComponentOwnershipDecision,
     SemanticOwnershipAgent,
@@ -26,7 +32,7 @@ from .evaluator.components import (
     project_components,
 )
 from .evaluator.container import InfrastructureEvaluationError, PrismContainerEvaluator
-from .evaluator.interface import PrismContext
+from .evaluator.interface import PrismContext, TrainingRecipe
 from .evaluator.l1_syntax import validate_l1
 from .evaluator.l2_proxy import score_l2
 from .evaluator.l3_train import score_l3
@@ -37,9 +43,10 @@ from .evaluator.review_rules import ReviewRule, load_review_rules
 from .evaluator.sandbox import (
     SandboxViolation,
     inspect_code,
+    load_module,
     load_submission_contract,
 )
-from .evaluator.schemas import ExecutionMode
+from .evaluator.schemas import ExecutionMode, PrismRunManifest
 from .evaluator.scoring import final_score, score_recipe
 from .gpu_scheduler import (
     GpuLease,
@@ -60,6 +67,70 @@ CONTAINER_EXECUTION_BACKENDS = frozenset(
     {"platform_container", "platform_gpu", "container_gpu", "docker_gpu"}
 )
 SUPPORTED_EXECUTION_BACKENDS = CONTAINER_EXECUTION_BACKENDS
+
+
+def _validated_retry_checkpoint_dir(
+    job: dict[str, object],
+    *,
+    submission_id: str,
+    code_hash: str,
+    arch_hash: str,
+    recipe_fingerprint: str,
+    previous_attempt: int,
+) -> Path:
+    artifact_output = Path(str(job["artifact_output_path"]))
+    manifest_path = Path(str(job["run_manifest_path"]))
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest = PrismRunManifest.model_validate(manifest_payload)
+    if manifest.submission_id != submission_id:
+        raise ValueError("retry checkpoint submission_id mismatch")
+    if not manifest.validation.passed or not manifest.validation.score_eligible:
+        raise ValueError("retry checkpoint manifest is not validation-passed")
+    checkpoints = [
+        checkpoint
+        for checkpoint in manifest.artifacts.checkpoints
+        if checkpoint.attempt == previous_attempt
+    ]
+    if not checkpoints:
+        raise ValueError("retry checkpoint manifest has no prior-attempt checkpoint")
+    checkpoint = checkpoints[-1]
+    metadata_path = artifact_output / checkpoint.metadata_path
+    checkpoint_dir = metadata_path.parent
+    checkpoint_artifact_logical_size(checkpoint_dir)
+    metadata = load_checkpoint_metadata(metadata_path)
+    expected = {
+        "submission_id": submission_id,
+        "code_hash": code_hash,
+        "arch_hash": arch_hash,
+        "recipe_fingerprint": recipe_fingerprint,
+        "attempt": previous_attempt,
+        "checkpoint_dir": checkpoint_dir.relative_to(artifact_output).as_posix(),
+    }
+    for field, value in expected.items():
+        if metadata[field] != value:
+            raise ValueError(f"retry checkpoint {field} mismatch")
+    checkpoint_path = artifact_output / str(metadata["checkpoint_path"])
+    if checkpoint_path.is_symlink() or not checkpoint_path.is_file():
+        raise ValueError("retry checkpoint file is missing")
+    checkpoint_path.resolve(strict=False).relative_to(checkpoint_dir.resolve(strict=False))
+    if metadata["checkpoint_path"] != checkpoint.path:
+        raise ValueError("retry checkpoint path mismatch")
+    return checkpoint_dir
+
+
+def _recipe_fingerprint(recipe: TrainingRecipe) -> str:
+    payload = json.dumps(asdict(recipe), sort_keys=True, separators=(",", ":"))
+    return sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _recipe_fingerprint_from_code(code: str, ctx: PrismContext) -> str:
+    recipe = load_module(code).get_recipe(ctx)
+    if not isinstance(recipe, TrainingRecipe):
+        if isinstance(recipe, dict):
+            recipe = TrainingRecipe(**recipe)
+        else:
+            raise SandboxViolation("get_recipe must return TrainingRecipe or dict")
+    return _recipe_fingerprint(recipe)
 
 
 @dataclass(frozen=True)
@@ -479,6 +550,18 @@ class PrismWorker:
             }
         )
         evaluator = PrismContainerEvaluator(settings=effective_settings, ctx=self.ctx)
+        attempt = await self.repository.container_job_attempt_count(
+            submission_id, self.execution_backend
+        ) + 1
+        resume_checkpoint_dir = None
+        if "function:load_checkpoint" in report.ast_fingerprint:
+            resume_checkpoint_dir = await self._retry_resume_checkpoint_dir(
+                submission_id=submission_id,
+                code_hash=code_hash,
+                arch_hash=arch_hash,
+                recipe_fingerprint=_recipe_fingerprint_from_code(code, self.ctx),
+                attempt=attempt,
+            )
         try:
             result = await asyncio.to_thread(
                 evaluator.evaluate,
@@ -491,6 +574,8 @@ class PrismWorker:
                 entrypoint=component_review.components.entrypoint,
                 gpu_lease=lease,
                 execution_mode=execution_mode,
+                attempt=attempt,
+                resume_checkpoint_dir=resume_checkpoint_dir,
             )
             await self._record_container_job(
                 submission_id=submission_id,
@@ -500,6 +585,7 @@ class PrismWorker:
                 lease=lease,
                 artifact_output_path=result.artifact_output_path,
                 run_manifest_path=result.run_manifest_path,
+                attempt=attempt,
             )
             await self._finalize_remote_result(
                 submission_id=submission_id,
@@ -519,6 +605,9 @@ class PrismWorker:
                 error=str(exc),
                 lease=lease,
                 infra_retryable=True,
+                artifact_output_path=exc.artifact_output_path,
+                run_manifest_path=exc.run_manifest_path,
+                attempt=attempt,
             )
             async with self.repository.database.connect() as conn:
                 await conn.execute(
@@ -534,11 +623,40 @@ class PrismWorker:
                 metrics={},
                 error=str(exc),
                 lease=lease,
+                attempt=attempt,
             )
             await self._fail_submission(submission_id, str(exc))
             return submission_id
         finally:
             await scheduler.release_for_submission(submission_id, "container job finished")
+
+    async def _retry_resume_checkpoint_dir(
+        self,
+        *,
+        submission_id: str,
+        code_hash: str,
+        arch_hash: str,
+        recipe_fingerprint: str,
+        attempt: int,
+    ) -> Path | None:
+        if attempt <= 1:
+            return None
+        job = await self.repository.latest_retryable_container_job(
+            submission_id, self.execution_backend
+        )
+        if job is None:
+            return None
+        try:
+            return _validated_retry_checkpoint_dir(
+                job,
+                submission_id=submission_id,
+                code_hash=code_hash,
+                arch_hash=arch_hash,
+                recipe_fingerprint=recipe_fingerprint,
+                previous_attempt=attempt - 1,
+            )
+        except (OSError, ValueError, CheckpointWorkspaceError):
+            return None
 
     async def _process_local_cpu_smoke_mode(
         self,
@@ -962,20 +1080,23 @@ class PrismWorker:
         artifact_output_path: str | None = None,
         run_manifest_path: str | None = None,
         infra_retryable: bool = False,
+        attempt: int = 0,
     ) -> None:
         async with self.repository.database.connect() as conn:
             await conn.execute(
                 "INSERT INTO eval_jobs("
-                "id, submission_id, level, status, external_job_id, metrics, error, created_at, "
+                "id, submission_id, level, status, attempts, external_job_id, metrics, error, "
+                "created_at, "
                 "updated_at, gpu_lease_id, target_id, target_server, gpu_device_ids, "
                 "requested_gpu_count, actual_gpu_count, gpu_mode, gpu_tier, "
                 "artifact_output_path, run_manifest_path, infra_retryable) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     str(uuid4()),
                     submission_id,
                     self.execution_backend,
                     status,
+                    attempt,
                     container_name,
                     dumps(metrics),
                     error,

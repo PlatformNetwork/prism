@@ -1459,6 +1459,27 @@ class PrismRepository:
         data["metadata"] = metadata if isinstance(metadata, dict) else {}
         return data
 
+    async def container_job_attempt_count(self, submission_id: str, level: str) -> int:
+        async with self.database.connect() as conn:
+            rows = await conn.execute_fetchall(
+                "SELECT COUNT(*) AS count FROM eval_jobs WHERE submission_id=? AND level=?",
+                (submission_id, level),
+            )
+        return int(list(rows)[0]["count"])
+
+    async def latest_retryable_container_job(
+        self, submission_id: str, level: str
+    ) -> dict[str, object] | None:
+        async with self.database.connect() as conn:
+            rows = await conn.execute_fetchall(
+                "SELECT * FROM eval_jobs WHERE submission_id=? AND level=? "
+                "AND status='infra_failed' AND infra_retryable=1 "
+                "AND artifact_output_path IS NOT NULL AND run_manifest_path IS NOT NULL "
+                "ORDER BY attempts DESC, created_at DESC LIMIT 1",
+                (submission_id, level),
+            )
+        return dict(list(rows)[0]) if rows else None
+
     async def create_assignment(
         self,
         *,
