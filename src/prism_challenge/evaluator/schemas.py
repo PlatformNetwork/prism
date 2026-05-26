@@ -4,9 +4,10 @@ import hashlib
 import json
 import math
 from enum import StrEnum
+from pathlib import PurePosixPath
 from typing import Any, Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from prism_challenge.evaluator.metrics import REQUIRED_DIAGNOSTICS
 
@@ -141,6 +142,13 @@ class ComputeManifest(SchemaModel):
     checkpoint_path: str | None = Field(default=None, min_length=1)
     resume_checkpoint_path: str | None = Field(default=None, min_length=1)
 
+    @field_validator("checkpoint_path", "resume_checkpoint_path")
+    @classmethod
+    def validate_checkpoint_artifact_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _artifact_relative_posix_path(value)
+
 
 class MetricPoint(SchemaModel):
     x: float = Field(ge=0.0)
@@ -266,11 +274,26 @@ class ArtifactReference(SchemaModel):
     bytes: int | None = Field(default=None, ge=0)
 
 
+class CheckpointArtifact(SchemaModel):
+    path: str = Field(min_length=1)
+    metadata_path: str = Field(min_length=1)
+    bytes: int = Field(ge=0)
+    attempt: int = Field(ge=1)
+    world_size: int = Field(ge=1)
+    rank_writer: int = Field(ge=0)
+    created_at: str = Field(min_length=1)
+
+    @field_validator("path", "metadata_path")
+    @classmethod
+    def validate_paths(cls, value: str) -> str:
+        return _artifact_relative_posix_path(value)
+
+
 class ArtifactManifest(SchemaModel):
     architecture_graph: ArtifactReference
     architecture_metadata: ArtifactReference
     run_log: ArtifactReference
-    checkpoints: list[ArtifactReference] = Field(default_factory=list)
+    checkpoints: list[CheckpointArtifact] = Field(default_factory=list)
     metrics: ArtifactReference | None = None
 
 
@@ -309,6 +332,12 @@ class PrismRunManifest(SchemaModel):
             raise ValueError("compute estimated_flops must match metrics estimated_flops")
         if self.model.architecture_graph_hash != self.artifacts.architecture_graph.sha256:
             raise ValueError("architecture graph artifact hash must match model graph hash")
+        if self.compute.checkpoint_path is not None:
+            checkpoint_paths = {checkpoint.path for checkpoint in self.artifacts.checkpoints}
+            if self.compute.checkpoint_path not in checkpoint_paths:
+                raise ValueError(
+                    "compute checkpoint_path must reference an artifacts.checkpoints path"
+                )
         return self
 
     def require_official_scoring_ready(self) -> PrismRunManifest:
@@ -324,6 +353,22 @@ class PrismRunManifest(SchemaModel):
         if redistribution.enabled:
             raise ValueError("main-track official scoring cannot redistribute loss component")
         return self
+
+
+def _artifact_relative_posix_path(value: str) -> str:
+    if value.startswith("/"):
+        raise ValueError("checkpoint paths must be artifact-relative POSIX paths")
+    if "\\" in value:
+        raise ValueError("checkpoint paths must use POSIX separators")
+    path = PurePosixPath(value)
+    if path.is_absolute() or not path.parts or path == PurePosixPath("."):
+        raise ValueError("checkpoint paths must be artifact-relative POSIX paths")
+    if any(part in {"", ".", ".."} for part in path.parts):
+        raise ValueError("checkpoint paths must not contain empty, '.', or '..' segments")
+    if len(path.parts[0]) == 2 and path.parts[0][1] == ":":
+        raise ValueError("checkpoint paths must not use host drive prefixes")
+    return path.as_posix()
+
 
 
 class DuplicateReport(SchemaModel):

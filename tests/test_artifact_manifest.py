@@ -16,6 +16,7 @@ GRAPH_HASH = "a" * 64
 LOG_HASH = "b" * 64
 METADATA_HASH = "c" * 64
 METRICS_HASH = "d" * 64
+CREATED_AT = "2026-05-25T00:00:00Z"
 
 
 def _valid_diagnostics() -> dict:
@@ -113,7 +114,7 @@ def _valid_manifest(mode: str) -> dict:
             "tokens_seen": 128,
             "estimated_flops": 2048.0,
             "wall_clock_seconds": 1.25,
-            "checkpoint_path": "artifacts/checkpoint.pt",
+            "checkpoint_path": None,
             "resume_checkpoint_path": None,
         },
         "metrics": {
@@ -176,6 +177,23 @@ def _valid_manifest(mode: str) -> dict:
     }
 
 
+def _checkpoint_entry(
+    path: str = "checkpoints/submission-1/attempt-1/current/checkpoint.pt",
+    metadata_path: str = (
+        "checkpoints/submission-1/attempt-1/current/checkpoint_metadata.v1.json"
+    ),
+) -> dict:
+    return {
+        "path": path,
+        "metadata_path": metadata_path,
+        "bytes": 4096,
+        "attempt": 1,
+        "world_size": 1,
+        "rank_writer": 0,
+        "created_at": CREATED_AT,
+    }
+
+
 @pytest.mark.parametrize(
     "mode",
     [
@@ -190,6 +208,105 @@ def test_valid_manifest_fixtures_pass_validation(mode: str) -> None:
     assert RUN_MANIFEST_FILENAME == "prism_run_manifest.v1.json"
     assert manifest.mode == ExecutionMode(mode)
     assert manifest.metrics.loss_comparable is True
+
+
+def test_valid_checkpoint_manifest_fields_parse() -> None:
+    payload = deepcopy(_valid_manifest(ExecutionMode.GPU_PROXY_EVAL.value))
+    checkpoint = _checkpoint_entry()
+    payload["compute"]["checkpoint_path"] = checkpoint["path"]
+    payload["compute"]["resume_checkpoint_path"] = (
+        "checkpoints/submission-1/attempt-0/current/checkpoint.pt"
+    )
+    payload["artifacts"]["checkpoints"] = [checkpoint]
+
+    manifest = PrismRunManifest.model_validate(payload)
+
+    assert manifest.compute.checkpoint_path == checkpoint["path"]
+    assert manifest.compute.resume_checkpoint_path == (
+        "checkpoints/submission-1/attempt-0/current/checkpoint.pt"
+    )
+    assert manifest.artifacts.checkpoints[0].metadata_path == checkpoint["metadata_path"]
+    assert manifest.artifacts.checkpoints[0].bytes == 4096
+    assert manifest.artifacts.checkpoints[0].rank_writer == 0
+
+
+def test_checkpoint_fields_are_backward_compatible_when_absent() -> None:
+    payload = deepcopy(_valid_manifest(ExecutionMode.GPU_PROXY_EVAL.value))
+    payload["compute"].pop("checkpoint_path")
+    payload["compute"].pop("resume_checkpoint_path")
+    payload["artifacts"].pop("checkpoints")
+
+    manifest = PrismRunManifest.model_validate(payload)
+
+    assert manifest.compute.checkpoint_path is None
+    assert manifest.compute.resume_checkpoint_path is None
+    assert manifest.artifacts.checkpoints == []
+
+
+def test_compute_checkpoint_path_requires_checkpoint_artifact_entry() -> None:
+    payload = deepcopy(_valid_manifest(ExecutionMode.GPU_PROXY_EVAL.value))
+    payload["compute"]["checkpoint_path"] = (
+        "checkpoints/submission-1/attempt-1/current/checkpoint.pt"
+    )
+
+    with pytest.raises(ValidationError, match="checkpoint_path"):
+        PrismRunManifest.model_validate(payload)
+
+
+def test_artifacts_checkpoints_use_exact_v1_shape() -> None:
+    payload = deepcopy(_valid_manifest(ExecutionMode.GPU_PROXY_EVAL.value))
+    checkpoint = _checkpoint_entry()
+    checkpoint["sha256"] = GRAPH_HASH
+    payload["compute"]["checkpoint_path"] = checkpoint["path"]
+    payload["artifacts"]["checkpoints"] = [checkpoint]
+
+    with pytest.raises(ValidationError):
+        PrismRunManifest.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "checkpoint_path",
+    [
+        "/artifacts/checkpoints/submission-1/attempt-1/current/checkpoint.pt",
+        "/tmp/prism/checkpoint.pt",
+        "../checkpoint.pt",
+        "checkpoints/submission-1/../checkpoint.pt",
+        "C:/Users/prism/checkpoint.pt",
+        "checkpoints\\submission-1\\checkpoint.pt",
+    ],
+)
+def test_compute_checkpoint_paths_reject_unsafe_host_or_container_paths(
+    checkpoint_path: str,
+) -> None:
+    payload = deepcopy(_valid_manifest(ExecutionMode.GPU_PROXY_EVAL.value))
+    payload["compute"]["checkpoint_path"] = checkpoint_path
+
+    with pytest.raises(ValidationError):
+        PrismRunManifest.model_validate(payload)
+
+
+def test_compute_resume_checkpoint_path_rejects_container_absolute_path() -> None:
+    payload = deepcopy(_valid_manifest(ExecutionMode.GPU_PROXY_EVAL.value))
+    payload["compute"]["resume_checkpoint_path"] = (
+        "/artifacts/checkpoints/submission-1/attempt-1/current/checkpoint.pt"
+    )
+
+    with pytest.raises(ValidationError):
+        PrismRunManifest.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["path", "metadata_path"],
+)
+def test_artifact_checkpoint_paths_reject_host_absolute_paths(field: str) -> None:
+    payload = deepcopy(_valid_manifest(ExecutionMode.GPU_PROXY_EVAL.value))
+    checkpoint = _checkpoint_entry()
+    checkpoint[field] = "/artifacts/checkpoints/submission-1/attempt-1/current/checkpoint.pt"
+    payload["artifacts"]["checkpoints"] = [checkpoint]
+
+    with pytest.raises(ValidationError):
+        PrismRunManifest.model_validate(payload)
 
 
 @pytest.mark.parametrize(
