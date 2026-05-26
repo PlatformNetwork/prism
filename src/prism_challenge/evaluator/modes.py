@@ -54,6 +54,11 @@ def build_evaluation_mode_spec(
     mode: ExecutionMode,
     *,
     settings: PrismSettings,
+    gpu_count: int | None = None,
+    max_gpu_count: int | None = None,
+    gpu_type: str | None = None,
+    gpu_server: str | None = None,
+    gpu_device_ids: tuple[str, ...] | list[str] | None = None,
     artifact_output_path: str = "/artifacts",
     run_manifest_path: str = f"/artifacts/{RUN_MANIFEST_FILENAME}",
 ) -> dict[str, Any]:
@@ -64,7 +69,7 @@ def build_evaluation_mode_spec(
         "mode": mode.value,
         "official_score_eligible": mode is not ExecutionMode.LOCAL_CPU_SMOKE,
         "image": settings.platform_eval_image,
-        "command": ["python", "/workspace/runner.py", "/workspace/payload.json"],
+        "command": list(_gpu_runner_command(gpu_count or settings.platform_eval_gpu_count)),
         "token_budget": token_budget,
         "parameter_target": parameter_target,
         "dataset": {
@@ -73,7 +78,15 @@ def build_evaluation_mode_spec(
             "token_count": _dataset_token_count(mode),
             "network_fallback_allowed": False,
         },
-        "resource_profile": _resource_profile(mode, settings),
+        "resource_profile": _resource_profile(
+            mode,
+            settings,
+            gpu_count=gpu_count,
+            max_gpu_count=max_gpu_count,
+            gpu_type=gpu_type,
+            gpu_server=gpu_server,
+            gpu_device_ids=gpu_device_ids,
+        ),
         "artifact_output_path": artifact_output_path,
         "run_manifest_path": run_manifest_path,
         "manifest_filename": RUN_MANIFEST_FILENAME,
@@ -312,7 +325,16 @@ def _local_smoke_summary_metrics(manifest: dict[str, Any]) -> dict[str, float]:
     }
 
 
-def _resource_profile(mode: ExecutionMode, settings: PrismSettings) -> dict[str, Any]:
+def _resource_profile(
+    mode: ExecutionMode,
+    settings: PrismSettings,
+    *,
+    gpu_count: int | None = None,
+    max_gpu_count: int | None = None,
+    gpu_type: str | None = None,
+    gpu_server: str | None = None,
+    gpu_device_ids: tuple[str, ...] | list[str] | None = None,
+) -> dict[str, Any]:
     if mode is ExecutionMode.LOCAL_CPU_SMOKE:
         return {
             "profile": "local_cpu_smoke",
@@ -327,13 +349,34 @@ def _resource_profile(mode: ExecutionMode, settings: PrismSettings) -> dict[str,
         "profile": "fixed_official_gpu",
         "cpus": settings.platform_eval_cpus,
         "memory": settings.platform_eval_memory,
-        "gpu_count": settings.platform_eval_gpu_count,
-        "max_gpu_count": settings.platform_eval_max_gpu_count,
-        "gpu_type": settings.platform_eval_gpu_type,
-        "gpu_server": settings.platform_eval_gpu_server,
-        "gpu_device_ids": list(settings.platform_eval_gpu_device_ids),
+        "gpu_count": gpu_count or settings.platform_eval_gpu_count,
+        "max_gpu_count": max_gpu_count or settings.platform_eval_max_gpu_count,
+        "gpu_type": gpu_type if gpu_type is not None else settings.platform_eval_gpu_type,
+        "gpu_server": (
+            gpu_server if gpu_server is not None else settings.platform_eval_gpu_server
+        ),
+        "gpu_device_ids": list(
+            gpu_device_ids
+            if gpu_device_ids is not None
+            else settings.platform_eval_gpu_device_ids
+        ),
         "official_fixed_profile": True,
     }
+
+
+def _gpu_runner_command(gpu_count: int) -> tuple[str, ...]:
+    if gpu_count < 1:
+        raise ValueError("GPU evaluator mode requires at least 1 GPU")
+    if gpu_count > 8:
+        raise ValueError("GPU evaluator mode supports at most 8 GPUs")
+    return (
+        "torchrun",
+        "--standalone",
+        "--nnodes=1",
+        f"--nproc-per-node={gpu_count}",
+        "/workspace/runner.py",
+        "/workspace/payload.json",
+    )
 
 
 def _token_budget(mode: ExecutionMode) -> int:
