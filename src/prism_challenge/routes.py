@@ -9,6 +9,7 @@ from .auth import authenticate_miner
 from .models import (
     ArchitectureFamilyResponse,
     EpochResponse,
+    EvalJobHealthEntry,
     LeaderboardEntry,
     LeaderboardResponse,
     SubmissionCreate,
@@ -146,4 +147,24 @@ async def list_epochs(
             status=str(row["status"]),
         )
         for row in await repository.list_epochs(limit=limit)
+    ]
+
+
+@public_route(tags=["health"])
+@router.get("/health/eval-jobs", response_model=list[EvalJobHealthEntry])
+async def eval_job_health(
+    limit: int = Query(default=50, ge=1, le=200),
+    repository: PrismRepository = Depends(repo_from_request),
+) -> list[EvalJobHealthEntry]:
+    return [
+        EvalJobHealthEntry(
+            id=str(row["id"]),
+            submission_id=str(row["submission_id"]),
+            level=str(row["level"]),
+            status=str(row["status"]),
+            attempts=int(cast(SupportsInt, row["attempts"])),
+            created_at=datetime.fromisoformat(str(row["created_at"])),
+            updated_at=datetime.fromisoformat(str(row["updated_at"])),
+        )
+        for row in await repository.list_eval_job_health(limit=limit)
     ]

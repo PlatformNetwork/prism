@@ -116,6 +116,16 @@ class EpochResponse(BaseModel):
     status: str
 
 
+class EvalJobHealthEntry(BaseModel):
+    id: str
+    submission_id: str
+    level: str
+    status: str
+    attempts: int
+    created_at: datetime
+    updated_at: datetime
+
+
 class ArchitectureFamilyResponse(BaseModel):
     id: str
     family_hash: str

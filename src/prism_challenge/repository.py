@@ -540,6 +540,15 @@ class PrismRepository:
             )
         return [dict(row) for row in rows]
 
+    async def list_eval_job_health(self, limit: int = 50) -> list[dict[str, object]]:
+        async with self.database.connect() as conn:
+            rows = await conn.execute_fetchall(
+                "SELECT id, submission_id, level, status, attempts, created_at, updated_at "
+                "FROM eval_jobs ORDER BY created_at DESC, id DESC LIMIT ?",
+                (limit,),
+            )
+        return [dict(row) for row in rows]
+
     async def store_runtime_config(
         self,
         *,
