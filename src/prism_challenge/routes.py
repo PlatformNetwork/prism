@@ -55,10 +55,16 @@ async def submission_status(
 @public_route(tags=["leaderboard"])
 @router.get("/leaderboard", response_model=LeaderboardResponse)
 async def leaderboard(
-    request: Request, repository: PrismRepository = Depends(repo_from_request)
+    request: Request,
+    epoch_id: int | None = Query(default=None, ge=0),
+    repository: PrismRepository = Depends(repo_from_request),
 ) -> LeaderboardResponse:
-    epoch_id = epoch_id_for(datetime.now(UTC), request.app.state.settings.epoch_seconds)
-    rows = await repository.leaderboard(epoch_id)
+    resolved_epoch_id = (
+        epoch_id
+        if epoch_id is not None
+        else epoch_id_for(datetime.now(UTC), request.app.state.settings.epoch_seconds)
+    )
+    rows = await repository.leaderboard(resolved_epoch_id)
     entries = [
         LeaderboardEntry(
             rank=index + 1,
@@ -68,7 +74,7 @@ async def leaderboard(
         )
         for index, row in enumerate(rows)
     ]
-    return LeaderboardResponse(epoch_id=epoch_id, entries=entries)
+    return LeaderboardResponse(epoch_id=resolved_epoch_id, entries=entries)
 
 
 @public_route(tags=["components"])
