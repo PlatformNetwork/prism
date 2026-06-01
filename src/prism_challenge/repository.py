@@ -112,7 +112,8 @@ class PrismRepository:
     async def get_submission(self, submission_id: str) -> SubmissionStatusResponse | None:
         async with self.database.connect() as conn:
             row = await conn.execute_fetchall(
-                "SELECT s.*, sc.q_arch, sc.q_recipe, sc.final_score FROM submissions s "
+                "SELECT s.*, sc.q_arch, sc.q_recipe, sc.final_score, "
+                "sc.anti_cheat_multiplier, sc.diversity_bonus, sc.penalty FROM submissions s "
                 "LEFT JOIN scores sc ON sc.submission_id=s.id WHERE s.id=?",
                 (submission_id,),
             )
@@ -130,6 +131,9 @@ class PrismRepository:
             final_score=item["final_score"],
             q_arch=item["q_arch"],
             q_recipe=item["q_recipe"],
+            anti_cheat_multiplier=item["anti_cheat_multiplier"],
+            diversity_bonus=item["diversity_bonus"],
+            penalty=item["penalty"],
         )
 
     async def previous_codes(self, current_submission_id: str) -> list[str]:

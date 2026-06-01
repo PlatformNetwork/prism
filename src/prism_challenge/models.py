@@ -64,6 +64,9 @@ class SubmissionStatusResponse(SubmissionResponse):
     final_score: float | None = None
     q_arch: float | None = None
     q_recipe: float | None = None
+    anti_cheat_multiplier: float | None = None
+    diversity_bonus: float | None = None
+    penalty: float | None = None
 
 
 class EvaluationAssignmentResponse(BaseModel):
