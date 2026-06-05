@@ -50,9 +50,15 @@ async def ensure_epoch(conn: aiosqlite.Connection, epoch_id: int, epoch_seconds:
 
 
 class PrismRepository:
-    def __init__(self, database: Database, epoch_seconds: int) -> None:
+    def __init__(
+        self,
+        database: Database,
+        epoch_seconds: int,
+        worker_claim_timeout_seconds: int = 900,
+    ) -> None:
         self.database = database
         self.epoch_seconds = epoch_seconds
+        self.worker_claim_timeout_seconds = worker_claim_timeout_seconds
 
     async def create_submission(self, hotkey: str, request: SubmissionCreate) -> SubmissionResponse:
         created = datetime.now(UTC)
@@ -1488,19 +1494,67 @@ class PrismRepository:
             rows = await conn.execute_fetchall(query, params)
         return [dict(row) for row in rows]
 
-    async def claim_next(self) -> dict[str, object] | None:
+    async def requeue_orphaned_running(self) -> list[str]:
+        # claimed_at and cutoff share one tz-aware ISO formatter, so lexicographic
+        # `<` is a valid time test (mirrors expire_stale_assignments' deadline_at).
+        cutoff = (
+            datetime.now(UTC) - timedelta(seconds=self.worker_claim_timeout_seconds)
+        ).isoformat()
+        now = now_iso()
         async with self.database.connect() as conn:
             rows = await conn.execute_fetchall(
-                "SELECT * FROM submissions WHERE status=? ORDER BY created_at LIMIT 1",
-                (SubmissionStatus.PENDING.value,),
+                "SELECT id FROM submissions "
+                "WHERE status=? AND claimed_at IS NOT NULL AND claimed_at < ?",
+                (SubmissionStatus.RUNNING.value, cutoff),
             )
-            if not rows:
-                return None
-            row = list(rows)[0]
-            await conn.execute(
-                "UPDATE submissions SET status=?, updated_at=? WHERE id=?",
-                (SubmissionStatus.RUNNING.value, now_iso(), row["id"]),
-            )
+            requeued = [str(row["id"]) for row in rows]
+            if requeued:
+                await conn.execute(
+                    "UPDATE submissions SET status=?, claimed_at=NULL, updated_at=? "
+                    "WHERE status=? AND claimed_at IS NOT NULL AND claimed_at < ?",
+                    (
+                        SubmissionStatus.PENDING.value,
+                        now,
+                        SubmissionStatus.RUNNING.value,
+                        cutoff,
+                    ),
+                )
+        return requeued
+
+    async def claim_next(self) -> dict[str, object] | None:
+        await self.requeue_orphaned_running()
+        claimed_at = now_iso()
+        async with self.database.connect() as conn:
+            row: aiosqlite.Row | None = None
+            while True:
+                # Atomic compare-and-swap: the AND status='pending' guard + RETURNING
+                # close the read-then-write gap that let two callers double-claim.
+                rows = await conn.execute_fetchall(
+                    "UPDATE submissions SET status=?, updated_at=?, claimed_at=? "
+                    "WHERE id=("
+                    "SELECT id FROM submissions WHERE status=? ORDER BY created_at LIMIT 1"
+                    ") AND status=? "
+                    "RETURNING *",
+                    (
+                        SubmissionStatus.RUNNING.value,
+                        claimed_at,
+                        claimed_at,
+                        SubmissionStatus.PENDING.value,
+                        SubmissionStatus.PENDING.value,
+                    ),
+                )
+                row_list = list(rows)
+                if row_list:
+                    row = row_list[0]
+                    break
+                # 0 rows: lost the race for that row -> retry the NEXT pending row;
+                # only return None when no pending row remains.
+                pending = await conn.execute_fetchall(
+                    "SELECT 1 FROM submissions WHERE status=? LIMIT 1",
+                    (SubmissionStatus.PENDING.value,),
+                )
+                if not list(pending):
+                    return None
         data = dict(cast(Any, row))
         metadata = loads(str(data.get("metadata", "{}")))
         data["metadata"] = metadata if isinstance(metadata, dict) else {}

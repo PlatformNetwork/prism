@@ -17,7 +17,8 @@ SCHEMA = (
     "CREATE TABLE IF NOT EXISTS submissions ("
     "id TEXT PRIMARY KEY, hotkey TEXT NOT NULL, epoch_id INTEGER NOT NULL, filename TEXT NOT NULL,"
     "code TEXT NOT NULL, code_hash TEXT NOT NULL, arch_hash TEXT, metadata TEXT NOT NULL,"
-    "status TEXT NOT NULL, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);"
+    "status TEXT NOT NULL, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,"
+    "claimed_at TEXT);"
     "CREATE INDEX IF NOT EXISTS idx_submissions_epoch ON submissions(epoch_id, status);"
     "CREATE TABLE IF NOT EXISTS eval_jobs ("
     "id TEXT PRIMARY KEY, submission_id TEXT NOT NULL, level TEXT NOT NULL, status TEXT NOT NULL,"
@@ -214,6 +215,11 @@ def loads(data: str | None) -> Any:
 
 
 async def _run_migrations(conn: aiosqlite.Connection) -> None:
+    await _ensure_columns(
+        conn,
+        "submissions",
+        {"claimed_at": "TEXT"},
+    )
     await _ensure_columns(
         conn,
         "architecture_families",

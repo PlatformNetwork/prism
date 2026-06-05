@@ -28,7 +28,11 @@ from .weights import get_weights
 
 def create_app(app_settings: PrismSettings = settings) -> FastAPI:
     database = Database(app_settings.resolved_database_path)
-    repository = PrismRepository(database, app_settings.epoch_seconds)
+    repository = PrismRepository(
+        database,
+        app_settings.epoch_seconds,
+        worker_claim_timeout_seconds=app_settings.worker_claim_timeout_seconds,
+    )
     ctx = PrismContext(
         sequence_length=app_settings.sequence_length,
         max_layers=app_settings.max_layers,
