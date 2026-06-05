@@ -375,34 +375,33 @@ def test_anti_cheat_similarity_and_diversity():
 
 
 def test_prism_chutes_tool_call_review(monkeypatch):
+    tool_call_args = {
+        "SubmitMermaid": {
+            "mermaid": "flowchart LR\n  A[Model] --> B[Logits]",
+            "notes": "valid architecture summary",
+        },
+        "SubmitVerdict": {
+            "reason": "valid Prism model",
+            "verdict": True,
+            "confidence": 0.8,
+        },
+    }
+
     class FakeChat:
         def __init__(self, **kwargs):
             assert kwargs["model"] == "model"
+            self._forced = None
 
-        def bind_tools(self, tools, strict=False):
-            assert strict is True
-            assert [tool.__name__ for tool in tools] == ["SubmitMermaid", "SubmitVerdict"]
+        def bind_tools(self, tools, tool_choice=None, strict=False):
+            assert strict is False
+            names = [tool.__name__ for tool in tools]
+            assert names == [tool_choice]
+            self._forced = tool_choice
             return self
 
         def invoke(self, _messages):
             return SimpleNamespace(
-                tool_calls=[
-                    {
-                        "name": "SubmitMermaid",
-                        "args": {
-                            "mermaid": "flowchart LR\n  A[Model] --> B[Logits]",
-                            "notes": "valid architecture summary",
-                        },
-                    },
-                    {
-                        "name": "SubmitVerdict",
-                        "args": {
-                            "reason": "valid Prism model",
-                            "verdict": True,
-                            "confidence": 0.8,
-                        },
-                    }
-                ]
+                tool_calls=[{"name": self._forced, "args": tool_call_args[self._forced]}]
             )
 
     monkeypatch.setattr(llm_review, "_load_chat_openai", lambda: FakeChat)

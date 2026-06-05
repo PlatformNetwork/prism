@@ -253,21 +253,34 @@ def _invoke_review_flow(config: LlmReviewConfig, *, system: str, prompt: str) ->
         max_retries=config.max_retries,
         max_tokens=config.max_tokens,
     )
-    bound = chat.bind_tools([SubmitMermaid, SubmitVerdict], strict=True)
-    message = bound.invoke([("system", system), ("user", prompt)])
-    tool_calls = getattr(message, "tool_calls", None) or []
-    names = [_tool_name(call) for call in tool_calls]
-    if names != ["SubmitMermaid", "SubmitVerdict"]:
-        raise RuntimeError(
-            "llm_review_order_error: model must call SubmitMermaid before SubmitVerdict"
-        )
-    mermaid = SubmitMermaid.model_validate(_tool_args(tool_calls[0]))
-    verdict = SubmitVerdict.model_validate(_tool_args(tool_calls[1]))
+    mermaid = _forced_tool_call(chat, SubmitMermaid, [("system", system), ("user", prompt)])
+    verdict = _forced_tool_call(
+        chat,
+        SubmitVerdict,
+        [
+            ("system", system),
+            ("user", prompt),
+            ("assistant", f"Reviewed logic diagram:\n{mermaid.mermaid}\nNotes: {mermaid.notes}"),
+            ("user", "Now call SubmitVerdict exactly once with your final verdict."),
+        ],
+    )
     return {
         "mermaid": mermaid.model_dump(mode="json"),
         "verdict": verdict.model_dump(mode="json"),
-        "tool_order": names,
+        "tool_order": ["SubmitMermaid", "SubmitVerdict"],
     }
+
+
+def _forced_tool_call(chat: Any, tool: type[BaseModel], messages: list[tuple[str, str]]) -> Any:
+    # gpt-4o-mini emits one tool call per turn, so the two tools are forced sequentially via
+    # tool_choice; strict=False keeps ReviewEvidence's tolerant optionals provider-valid.
+    bound = chat.bind_tools([tool], tool_choice=tool.__name__, strict=False)
+    message = bound.invoke(messages)
+    tool_calls = getattr(message, "tool_calls", None) or []
+    match = next((call for call in tool_calls if _tool_name(call) == tool.__name__), None)
+    if match is None:
+        raise RuntimeError(f"llm_review_order_error: model did not call {tool.__name__}")
+    return tool.model_validate(_tool_args(match))
 
 
 def _tool_name(call: Any) -> str:
