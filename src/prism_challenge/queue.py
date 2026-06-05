@@ -692,7 +692,36 @@ class PrismWorker:
                 artifact_output_path=result.artifact_output_path,
                 run_manifest_path=result.run_manifest_path,
             )
+            q_arch = max(0.0, min(1.0, float(metrics.get("q_arch", 0.0))))
+            q_recipe = max(0.0, min(1.0, float(metrics.get("q_recipe", 0.5))))
+            penalty = float(metrics.get("penalty", 0.0))
+            runtime_config = await self.repository.runtime_config(self.settings, official=True)
+            scored = final_score(
+                q_arch=q_arch,
+                q_recipe=q_recipe,
+                anti_cheat_multiplier=anti_multiplier,
+                diversity_bonus=diversity_bonus,
+                penalty=penalty,
+                arch_weight=runtime_config.score_weights.final_architecture_weight,
+                recipe_weight=runtime_config.score_weights.final_recipe_weight,
+            )
             async with self.repository.database.connect() as conn:
+                await conn.execute(
+                    "INSERT OR REPLACE INTO scores("
+                    "submission_id, q_arch, q_recipe, anti_cheat_multiplier, diversity_bonus,"
+                    "penalty, final_score, metrics, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        submission_id,
+                        scored.q_arch,
+                        scored.q_recipe,
+                        anti_multiplier,
+                        diversity_bonus,
+                        penalty,
+                        scored.final_score,
+                        dumps(metrics),
+                        now_iso(),
+                    ),
+                )
                 await conn.execute(
                     "UPDATE submissions SET status=?, arch_hash=?, updated_at=? WHERE id=?",
                     (SubmissionStatus.COMPLETED.value, arch_hash, now_iso(), submission_id),
