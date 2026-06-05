@@ -7,7 +7,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from .review_rules import ReviewRule, rules_prompt
 from .schemas import DeterministicEvidence
@@ -30,6 +30,24 @@ class SubmitMermaid(BaseModel):
     notes: str = Field(default="", description="Short review notes for the diagram.")
 
 
+class ReviewEvidence(BaseModel):
+    """Tolerant tool-input schema for LLM-reported evidence.
+
+    Intentionally loose: real model output omits line numbers and cannot
+    compute a 64-char SHA-256 snippet_hash, so requiring them here fails closed
+    and rejects every submission. Do NOT tighten. Hard rejection is still gated
+    by the strict DeterministicEvidence re-validation in _as_evidence_payload;
+    imperfect citations quarantine (held) rather than approve.
+    """
+
+    rule_id: str = Field(min_length=1)
+    artifact_path: str = Field(default="submission.py", min_length=1)
+    line: int | None = Field(default=None, ge=1)
+    ast_node: str | None = Field(default=None, min_length=1)
+    snippet_hash: str | None = Field(default=None)
+    explanation: str = Field(min_length=1)
+
+
 class SubmitVerdict(BaseModel):
     """Submit the final review verdict. Fill reason before verdict."""
 
@@ -43,7 +61,7 @@ class SubmitVerdict(BaseModel):
     violations: list[str] = Field(default_factory=list, description="Rule ids or violation labels.")
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     rule_ids: list[str] = Field(default_factory=list)
-    evidence: list[DeterministicEvidence] = Field(
+    evidence: list[ReviewEvidence] = Field(
         default_factory=list,
         description=(
             "Deterministic evidence required for rejection; suspicion without it quarantines."
@@ -312,7 +330,14 @@ def _as_evidence_payload(value: Any) -> list[dict[str, Any]]:
         return []
     if not isinstance(value, list):
         value = [value]
-    return [DeterministicEvidence.model_validate(item).model_dump(mode="json") for item in value]
+    payload: list[dict[str, Any]] = []
+    for item in value:
+        try:
+            deterministic = DeterministicEvidence.model_validate(item)
+        except ValidationError:
+            continue
+        payload.append(deterministic.model_dump(mode="json"))
+    return payload
 
 
 def _as_list(value: Any) -> list[str]:
