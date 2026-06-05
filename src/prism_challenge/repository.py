@@ -55,10 +55,12 @@ class PrismRepository:
         database: Database,
         epoch_seconds: int,
         worker_claim_timeout_seconds: int = 900,
+        held_review_timeout_seconds: int = 86400,
     ) -> None:
         self.database = database
         self.epoch_seconds = epoch_seconds
         self.worker_claim_timeout_seconds = worker_claim_timeout_seconds
+        self.held_review_timeout_seconds = held_review_timeout_seconds
 
     async def create_submission(self, hotkey: str, request: SubmissionCreate) -> SubmissionResponse:
         created = datetime.now(UTC)
@@ -1494,6 +1496,46 @@ class PrismRepository:
             rows = await conn.execute_fetchall(query, params)
         return [dict(row) for row in rows]
 
+    async def expire_stale_held(self) -> list[str]:
+        # NOT EXISTS scoping is load-bearing: only STUCK LLM holds (held with NO
+        # pending component_review_holds row) are expired. Component holds keep a
+        # pending row, so expiring them to rejected here would let a later resolve
+        # approve-path flip rejected -> completed (terminal-state resurrection that
+        # bypasses the review gate). Cutoff/compare mirror requeue_orphaned_running.
+        cutoff = (
+            datetime.now(UTC) - timedelta(seconds=self.held_review_timeout_seconds)
+        ).isoformat()
+        now = now_iso()
+        reason = "review hold expired without resolution"
+        async with self.database.connect() as conn:
+            rows = await conn.execute_fetchall(
+                "SELECT id FROM submissions "
+                "WHERE status=? AND updated_at < ? "
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM component_review_holds h "
+                "WHERE h.submission_id = submissions.id AND h.status='pending'"
+                ")",
+                (SubmissionStatus.HELD.value, cutoff),
+            )
+            expired = [str(row["id"]) for row in rows]
+            if expired:
+                await conn.execute(
+                    "UPDATE submissions SET status=?, error=?, updated_at=? "
+                    "WHERE status=? AND updated_at < ? "
+                    "AND NOT EXISTS ("
+                    "SELECT 1 FROM component_review_holds h "
+                    "WHERE h.submission_id = submissions.id AND h.status='pending'"
+                    ")",
+                    (
+                        SubmissionStatus.REJECTED.value,
+                        reason,
+                        now,
+                        SubmissionStatus.HELD.value,
+                        cutoff,
+                    ),
+                )
+        return expired
+
     async def requeue_orphaned_running(self) -> list[str]:
         # claimed_at and cutoff share one tz-aware ISO formatter, so lexicographic
         # `<` is a valid time test (mirrors expire_stale_assignments' deadline_at).
@@ -1523,6 +1565,7 @@ class PrismRepository:
 
     async def claim_next(self) -> dict[str, object] | None:
         await self.requeue_orphaned_running()
+        await self.expire_stale_held()
         claimed_at = now_iso()
         async with self.database.connect() as conn:
             row: aiosqlite.Row | None = None

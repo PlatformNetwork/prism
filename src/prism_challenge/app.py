@@ -32,6 +32,7 @@ def create_app(app_settings: PrismSettings = settings) -> FastAPI:
         database,
         app_settings.epoch_seconds,
         worker_claim_timeout_seconds=app_settings.worker_claim_timeout_seconds,
+        held_review_timeout_seconds=app_settings.held_review_timeout_seconds,
     )
     ctx = PrismContext(
         sequence_length=app_settings.sequence_length,

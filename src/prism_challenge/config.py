@@ -83,6 +83,7 @@ class PrismSettings(ChallengeSettings):
     chutes_api_key: str | None = None
     chutes_api_key_file: Path | None = None
     llm_review_timeout_seconds: int = 60
+    held_review_timeout_seconds: int = 86400
     llm_review_temperature: float = 0.0
     llm_review_max_tokens: int = 512
     llm_review_max_retries: int = 1
