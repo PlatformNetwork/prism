@@ -19,26 +19,51 @@ from prism_challenge.evaluator.source_similarity import SourceFile
 
 ARCH_PROBE = """
 import torch
+from torch import nn
 
 IMPORT_PROBE = torch.randn(4).tolist()
 
 
+class TinyLM(nn.Module):
+    def __init__(self, vocab):
+        super().__init__()
+        self.emb = nn.Embedding(vocab, 8)
+        self.head = nn.Linear(8, vocab)
+
+    def forward(self, tokens):
+        return self.head(self.emb(tokens))
+
+
 def build_model(ctx):
-    return torch.nn.Linear(4, 2)
+    return TinyLM(ctx.vocab_size)
 """
 
+# Consume the CHALLENGE instrument so the run is not a zero-forward run; the loop body is
+# identical to the benign twin so the forced-init invariant can be checked.
 TRAIN_TAMPER = """
 import json
 import pathlib
 
 import torch
+import torch.nn.functional as F
 from architecture import IMPORT_PROBE
 
 
 def train(ctx):
     torch.manual_seed(987654321)  # miner re-seed attempt -> forced init must win
     model = ctx.build_model()
-    params = [round(float(v), 8) for p in model.parameters() for v in p.detach().flatten().tolist()]
+    opt = torch.optim.AdamW(model.parameters(), lr=0.01)
+    for batch in ctx.iter_train_batches(model, batch_size=1):
+        opt.zero_grad()
+        logits = model(batch.tokens)
+        nv = logits.shape[-1]
+        loss = F.cross_entropy(
+            logits[:, :-1, :].reshape(-1, nv), batch.tokens[:, 1:].reshape(-1) % nv
+        )
+        loss.backward()
+        opt.step()
+    flat = [x for p in model.parameters() for x in p.detach().flatten().tolist()]
+    params = [round(float(x), 6) for x in flat]
     shards = sorted(pathlib.Path(ctx.data_dir).glob("*.jsonl"))
     data_text = shards[0].read_text(encoding="utf-8") if shards else ""
     pathlib.Path(ctx.artifacts_dir, "miner_probe.json").write_text(
@@ -59,12 +84,24 @@ import json
 import pathlib
 
 import torch
+import torch.nn.functional as F
 from architecture import IMPORT_PROBE
 
 
 def train(ctx):
     model = ctx.build_model()
-    params = [round(float(v), 8) for p in model.parameters() for v in p.detach().flatten().tolist()]
+    opt = torch.optim.AdamW(model.parameters(), lr=0.01)
+    for batch in ctx.iter_train_batches(model, batch_size=1):
+        opt.zero_grad()
+        logits = model(batch.tokens)
+        nv = logits.shape[-1]
+        loss = F.cross_entropy(
+            logits[:, :-1, :].reshape(-1, nv), batch.tokens[:, 1:].reshape(-1) % nv
+        )
+        loss.backward()
+        opt.step()
+    flat = [x for p in model.parameters() for x in p.detach().flatten().tolist()]
+    params = [round(float(x), 6) for x in flat]
     pathlib.Path(ctx.artifacts_dir, "miner_probe.json").write_text(
         json.dumps({"import_probe": IMPORT_PROBE, "params": params}),
         encoding="utf-8",
@@ -75,11 +112,23 @@ TRAIN_FAKE_MANIFEST = """
 import json
 import pathlib
 
+import torch
+import torch.nn.functional as F
 from architecture import build_model  # noqa: F401
 
 
 def train(ctx):
-    ctx.build_model()
+    model = ctx.build_model()
+    opt = torch.optim.AdamW(model.parameters(), lr=0.01)
+    for batch in ctx.iter_train_batches(model, batch_size=1):
+        opt.zero_grad()
+        logits = model(batch.tokens)
+        nv = logits.shape[-1]
+        loss = F.cross_entropy(
+            logits[:, :-1, :].reshape(-1, nv), batch.tokens[:, 1:].reshape(-1) % nv
+        )
+        loss.backward()
+        opt.step()
     pathlib.Path(ctx.artifacts_dir, "prism_run_manifest.v2.json").write_text(
         json.dumps(
             {
@@ -230,7 +279,11 @@ def test_harness_runner_ignores_miner_written_manifest(tmp_path):
     manifest = _read_manifest(artifacts)
     assert manifest["schema_version"] == "prism_run_manifest.v2"
     assert manifest["submission_id"] == "sub-abc123"
-    assert manifest["metrics"] == {}
+    # The challenge authors the metrics from its own instrumentation; the miner-fabricated
+    # values (bpb / q_arch) are discarded.
+    assert "online_loss" in manifest["metrics"]
+    assert "q_arch" not in manifest["metrics"]
+    assert "bpb" not in manifest["metrics"]
     assert manifest["miner_reported_ignored"] is True
 
 
@@ -250,7 +303,9 @@ def test_harness_runner_fresh_artifacts_discards_stale_manifest(tmp_path):
     manifest = _read_manifest(artifacts)
     assert manifest["run_id"] == "prism-reexec-sub-abc123"
     assert manifest["submission_id"] == "sub-abc123"
-    assert manifest["metrics"] == {}
+    # The stale planted manifest (bpb 9.99) is discarded; metrics come from this run.
+    assert "online_loss" in manifest["metrics"]
+    assert manifest["metrics"].get("bpb") != 9.99
 
 
 def test_container_runner_launch_command_is_loopback_single_proc():

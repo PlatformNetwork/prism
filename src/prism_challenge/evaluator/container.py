@@ -525,7 +525,9 @@ fallback); any miner-written manifest is ignored and the challenge authors
 prism_run_manifest.v2.json itself.
 """
 import dataclasses
+import importlib.util
 import json
+import math
 import os
 import random
 import sys
@@ -534,6 +536,13 @@ from pathlib import Path
 
 MANIFEST_GLOB = "prism_run_manifest*.json"
 CHALLENGE_MANIFEST_NAME = "prism_run_manifest.v2.json"
+# Step-0 (forced random init) loss must sit near the from-scratch baseline (~ln(vocab) nats);
+# an impossibly-low initial loss is the smuggled-pretrained-weights anomaly signal.
+STEP0_ANOMALY_FRACTION = 0.5
+# A NaN/Inf online loss is sanitized to a worst-case (high) per-batch code-length so it can
+# never collapse into a finite, advantageous score.
+WORST_CASE_LOSS_MULTIPLIER = 2.0
+DEFAULT_BATCH_SIZE = 8
 
 
 def _fail(reason):
@@ -630,6 +639,169 @@ print(
     flush=True,
 )
 
+
+@dataclasses.dataclass
+class _PrismBatch:
+    tokens: object
+    targets: object = None
+    metadata: object = None
+
+
+class _OnlineLossCapture:
+    """Challenge-owned predict-then-train online-loss instrument (architecture.md 4.3, 5).
+
+    Yields fresh, single-pass batches from the locked train split in a fixed challenge-controlled
+    order (no token/shard repeats within the run) and records the model's loss on each NEW batch
+    BEFORE the miner's optimizer updates on it. Because the data is single-pass, this online
+    training loss IS the prequential code-length by construction. The challenge computes the loss
+    itself (next-token cross-entropy over the model's logits); miner-reported numbers are ignored.
+    """
+
+    def __init__(
+        self,
+        *,
+        shards,
+        vocab_size,
+        seq_len,
+        batch_size,
+        baseline_nats,
+        token_budget,
+        step_budget,
+        tokenizer,
+        device,
+    ):
+        self.shards = list(shards)
+        self.vocab_size = max(int(vocab_size), 2)
+        self.seq_len = max(int(seq_len or 0), 2)
+        self.batch_size = max(int(batch_size or 1), 1)
+        self.baseline_nats = baseline_nats
+        self.token_budget = token_budget
+        self.step_budget = step_budget
+        self.tokenizer = tokenizer
+        self.device = device
+        self.worst_case_nats = baseline_nats * WORST_CASE_LOSS_MULTIPLIER
+        self.online_loss = []
+        self.covered_bytes_cumulative = []
+        self.covered_bytes = 0.0
+        self.consumed_batches = 0
+        self.consumed_tokens = 0
+        self.consumed_documents = 0
+        self.shard_offsets = []
+        self.nan_inf_batches = 0
+        self.sum_nll_nats = 0.0
+        self.started = False
+
+    def _encode(self, text, raw_bytes):
+        tokenizer = self.tokenizer
+        if tokenizer is None:
+            return list(raw_bytes)
+        if hasattr(tokenizer, "encode"):
+            ids = tokenizer.encode(text)
+        elif callable(tokenizer):
+            ids = tokenizer(text)
+        else:
+            return list(raw_bytes)
+        return [int(token_id) for token_id in ids]
+
+    def _token_stream(self):
+        for shard in self.shards:
+            shard_name = shard.name
+            with shard.open("r", encoding="utf-8") as handle:
+                for offset, line in enumerate(handle):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                        text = record["text"]
+                    except (ValueError, KeyError, TypeError):
+                        continue
+                    if not isinstance(text, str) or not text:
+                        continue
+                    raw_bytes = text.encode("utf-8")
+                    ids = self._encode(text, raw_bytes)
+                    if not ids:
+                        continue
+                    self.consumed_documents += 1
+                    self.shard_offsets.append([shard_name, offset])
+                    weight = len(raw_bytes) / len(ids)
+                    for token_id in ids:
+                        yield int(token_id), weight
+
+    def _predict_loss(self, model, tokens):
+        import torch
+        import torch.nn.functional as functional
+
+        with torch.no_grad():
+            logits = model(tokens)
+        if not isinstance(logits, torch.Tensor):
+            if (
+                isinstance(logits, (tuple, list))
+                and logits
+                and isinstance(logits[0], torch.Tensor)
+            ):
+                logits = logits[0]
+            elif hasattr(logits, "logits"):
+                logits = logits.logits
+            else:
+                raise RuntimeError("miner model forward did not return a logits tensor")
+        if logits.dim() == 2:
+            logits = logits.unsqueeze(0)
+        vocab = logits.shape[-1]
+        predictions = logits[:, :-1, :].reshape(-1, vocab)
+        targets = (tokens[:, 1:].reshape(-1)) % vocab
+        loss = functional.cross_entropy(predictions, targets)
+        return float(loss.detach().item())
+
+    def _emit(self, model, chunk):
+        import torch
+
+        ids = [token_id for token_id, _ in chunk]
+        nbytes = sum(weight for _, weight in chunk)
+        count = len(ids)
+        if count == self.seq_len * self.batch_size:
+            rows, cols = self.batch_size, self.seq_len
+        else:
+            rows, cols = 1, count
+        try:
+            model_device = next(model.parameters()).device
+        except StopIteration:
+            model_device = torch.device(self.device)
+        tokens = torch.tensor(ids, dtype=torch.long).remainder(self.vocab_size).view(rows, cols)
+        tokens = tokens.to(model_device)
+        loss_value = self._predict_loss(model, tokens)
+        if not math.isfinite(loss_value):
+            self.nan_inf_batches += 1
+            loss_value = self.worst_case_nats
+        self.online_loss.append(loss_value)
+        self.sum_nll_nats += loss_value
+        self.covered_bytes += nbytes
+        self.covered_bytes_cumulative.append(self.covered_bytes)
+        self.consumed_batches += 1
+        return _PrismBatch(tokens=tokens)
+
+    def iterate(self, model):
+        if self.started:
+            return
+        self.started = True
+        needed = self.seq_len * self.batch_size
+        buffer = []
+        for token_id, weight in self._token_stream():
+            if self.token_budget is not None and self.consumed_tokens >= self.token_budget:
+                break
+            buffer.append((token_id, weight))
+            self.consumed_tokens += 1
+            if len(buffer) >= needed:
+                yield self._emit(model, buffer[:needed])
+                buffer = buffer[needed:]
+                if self.step_budget is not None and self.consumed_batches >= self.step_budget:
+                    return
+        if len(buffer) >= 2 and (
+            self.step_budget is None or self.consumed_batches < self.step_budget
+        ):
+            yield self._emit(model, buffer)
+
+
 # --- challenge-owned interface module: the miner sees the FORCED ctx, not the installed one ---
 interface = types.ModuleType("prism_challenge.evaluator.interface")
 
@@ -668,25 +840,76 @@ class PrismContext:
             raise RuntimeError("architecture build_model is not available")
         return builder(self, *args, **kwargs)
 
+    def iter_train_batches(
+        self, model, *, batch_size=DEFAULT_BATCH_SIZE, seq_len=None, tokenizer=None
+    ):
+        # Challenge-controlled, single-pass, predict-then-train online-loss instrument. The miner
+        # iterates these batches; the challenge records the per-batch loss on each NEW batch BEFORE
+        # the miner's optimizer updates on it (architecture.md 4.3).
+        capture = interface._ONLINE_CAPTURE
+        if capture is None:
+            capture = _OnlineLossCapture(
+                shards=interface._TRAIN_SHARDS,
+                vocab_size=self.vocab_size,
+                seq_len=seq_len if seq_len is not None else self.sequence_length,
+                batch_size=batch_size,
+                baseline_nats=math.log(max(self.vocab_size, 2)),
+                token_budget=self.token_budget,
+                step_budget=self.step_budget,
+                tokenizer=tokenizer,
+                device=self.device,
+            )
+            interface._ONLINE_CAPTURE = capture
+        return capture.iterate(model)
+
     def reference_tokenizer(self, name):
         from prism_challenge.evaluator.reference_tokenizers import load_reference_tokenizer
 
         return load_reference_tokenizer(name, self.reference_tokenizer_dir)
 
 
+@dataclasses.dataclass(frozen=True)
+class TrainingRecipe:
+    learning_rate: float = 3e-4
+    batch_size: int = 4
+    optimizer: str = "adamw"
+    scheduler: str = "cosine"
+    weight_decay: float = 0.01
+
+
 interface.PrismContext = PrismContext
+interface.PrismBatch = _PrismBatch
+interface.TrainingRecipe = TrainingRecipe
 interface._MINER_BUILD_MODEL = None
-prism_pkg = types.ModuleType("prism_challenge")
+interface._TRAIN_SHARDS = train_shards
+interface._ONLINE_CAPTURE = None
+
+# Make the shadow ``prism_challenge.evaluator`` a real PACKAGE pointing at the installed
+# evaluator source so the miner's two scripts still see the FORCED interface
+# (``prism_challenge.evaluator.interface``) while real sibling submodules — notably
+# ``reference_tokenizers`` (and ``dataset``) — remain importable offline. A bare module shadow
+# (no ``__path__``) breaks ``ctx.reference_tokenizer('gpt2'|'llama')`` with a ModuleNotFoundError.
+_real_evaluator_locations = []
+try:
+    _evaluator_spec = importlib.util.find_spec("prism_challenge.evaluator")
+    if _evaluator_spec is not None and _evaluator_spec.submodule_search_locations:
+        _real_evaluator_locations = list(_evaluator_spec.submodule_search_locations)
+except Exception:
+    _real_evaluator_locations = []
+
+prism_pkg = sys.modules.get("prism_challenge")
+if prism_pkg is None:
+    prism_pkg = types.ModuleType("prism_challenge")
+    prism_pkg.__path__ = []
+    sys.modules["prism_challenge"] = prism_pkg
 evaluator_pkg = types.ModuleType("prism_challenge.evaluator")
-sys.modules.setdefault("prism_challenge", prism_pkg)
+evaluator_pkg.__path__ = _real_evaluator_locations
 sys.modules["prism_challenge.evaluator"] = evaluator_pkg
 sys.modules["prism_challenge.evaluator.interface"] = interface
 
 # --- import the two miner scripts AFTER forcing init ---
 project_root = Path(os.environ.get("PRISM_PROJECT_ROOT", "/workspace/project"))
 sys.path.insert(0, str(project_root))
-
-import importlib.util
 
 
 def _import_from_file(path, module_name):
@@ -744,6 +967,28 @@ print(
 miner_train(ctx)
 print("PRISM_RUNNER: train(ctx) returned", flush=True)
 
+# --- summarize the challenge-captured online-loss stream (NOT miner-reported numbers) ---
+capture = interface._ONLINE_CAPTURE
+consumed_batches = capture.consumed_batches if capture is not None else 0
+online_loss = list(capture.online_loss) if capture is not None else []
+covered_bytes_cumulative = list(capture.covered_bytes_cumulative) if capture is not None else []
+covered_bytes = int(round(capture.covered_bytes)) if capture is not None else 0
+sum_nll_nats = capture.sum_nll_nats if capture is not None else 0.0
+nan_inf_batches = capture.nan_inf_batches if capture is not None else 0
+consumed_documents = capture.consumed_documents if capture is not None else 0
+shard_offsets = capture.shard_offsets if capture is not None else []
+baseline_nats = (
+    capture.baseline_nats if capture is not None else math.log(max(ctx.vocab_size, 2))
+)
+step0_loss = online_loss[0] if online_loss else None
+step0_threshold = STEP0_ANOMALY_FRACTION * baseline_nats
+step0_anomaly = step0_loss is not None and step0_loss < step0_threshold
+# A zero-batch / no-forward run captured no online loss: flag-fail it instead of fabricating a
+# score or dividing by zero (architecture.md 4.3, 6; VAL-HARNESS-020).
+zero_forward = consumed_batches == 0 or covered_bytes <= 0
+no_learning = zero_forward
+distinct_offsets = len({tuple(item) for item in shard_offsets})
+
 
 def _write_challenge_manifest():
     manifest = {
@@ -768,8 +1013,31 @@ def _write_challenge_manifest():
             "available_bytes": available_bytes,
             "source": "locked-fineweb-edu-train",
             "random_token_fallback": False,
+            "single_pass": True,
+            "covered_bytes": covered_bytes,
+            "covered_bytes_cumulative": covered_bytes_cumulative,
+            "consumed_documents": consumed_documents,
+            "consumed_batches": consumed_batches,
+            "consumed_offsets": len(shard_offsets),
+            "distinct_offsets": distinct_offsets,
         },
-        "metrics": {},
+        "metrics": {
+            "online_loss": online_loss,
+            "step0_loss": step0_loss,
+            "random_init_baseline_nats": baseline_nats,
+            "consumed_batches": consumed_batches,
+            "covered_bytes": covered_bytes,
+            "sum_neg_log_likelihood_nats": sum_nll_nats,
+            "nan_inf_batches": nan_inf_batches,
+        },
+        "anti_cheat": {
+            "step0_anomaly": step0_anomaly,
+            "step0_anomaly_threshold_nats": step0_threshold,
+            "nan_inf_detected": nan_inf_batches > 0,
+            "nan_inf_batches": nan_inf_batches,
+            "no_learning": no_learning,
+            "zero_forward": zero_forward,
+        },
         "miner_reported_ignored": True,
     }
     out = Path(artifacts_dir) / CHALLENGE_MANIFEST_NAME
@@ -785,10 +1053,21 @@ if rank == 0:
             except OSError:
                 pass
     _write_challenge_manifest()
+    if no_learning:
+        _fail(
+            "zero-batch / no-forward run: no online loss captured "
+            "(miner never trained on the instrumented single-pass batches)"
+        )
     print(
         "PRISM_METRICS_JSON="
         + json.dumps(
-            {"available_bytes": float(available_bytes), "shard_count": float(len(train_shards))},
+            {
+                "available_bytes": float(available_bytes),
+                "shard_count": float(len(train_shards)),
+                "covered_bytes": float(covered_bytes),
+                "consumed_batches": float(consumed_batches),
+                "online_loss_samples": float(len(online_loss)),
+            },
             separators=(",", ":"),
         ),
         flush=True,
