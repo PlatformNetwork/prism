@@ -47,14 +47,32 @@ COPY src ./src
 # Install the CUDA-enabled torch from the cu128 channel FIRST, so the package
 # install below resolves `torch>=2.3` against the GPU build (not the CPU wheel),
 # then install the package (brings numpy, platform-network and runner deps).
+# sentencepiece + tiktoken back the llama / gpt2 reference tokenizers (also pinned in
+# pyproject.toml, installed here explicitly so the eval image always carries them).
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/${TORCH_CUDA_CHANNEL} \
-    && pip install --no-cache-dir .
+    && pip install --no-cache-dir . \
+    && pip install --no-cache-dir sentencepiece tiktoken
+
+# Bake the OFFLINE reference tokenizers into the image at a fixed path (network is available
+# at build time; the eval container runs network=none). gpt2 -> tiktoken BPE cache blobs read
+# back via TIKTOKEN_CACHE_DIR; llama -> a non-gated sentencepiece .model. See
+# evaluator/reference_tokenizers.py and architecture.md sections 3 + 9.
+ENV PRISM_REFERENCE_TOKENIZER_DIR=/opt/reference-tokenizers \
+    TIKTOKEN_CACHE_DIR=/opt/reference-tokenizers/gpt2
+RUN python -m prism_challenge.evaluator.reference_tokenizers \
+        --output-dir "$PRISM_REFERENCE_TOKENIZER_DIR"
+
+# Enforce Hugging Face offline mode for the eval container so no reference tokenizer / dataset
+# load can reach the network (VAL-DATA-012).
+ENV HF_HUB_OFFLINE=1 \
+    HF_DATASETS_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
 
 # Non-root runtime user.
 RUN useradd --create-home --shell /usr/sbin/nologin prism \
     && mkdir -p /workspace /artifacts \
-    && chown -R prism:prism /workspace /artifacts /opt/venv
+    && chown -R prism:prism /workspace /artifacts /opt/venv /opt/reference-tokenizers
 
 USER prism
 ENV HOME=/home/prism

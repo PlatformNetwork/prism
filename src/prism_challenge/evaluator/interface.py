@@ -13,8 +13,6 @@ DEFAULT_TRAINING_ENTRYPOINT = "training.py"
 ARCHITECTURE_FACTORY_NAME = "build_model"
 TRAINING_ENTRYPOINT_NAME = "train"
 
-REFERENCE_TOKENIZERS = ("gpt2", "llama")
-
 
 class SubmissionContractError(ValueError):
     """Raised when a submission bundle violates the two-script submission contract."""
@@ -58,20 +56,14 @@ class PrismContext:
     def reference_tokenizer(self, name: str) -> Any:
         """Load a pre-staged reference tokenizer (offline, no network).
 
-        The reference tokenizers (gpt2 via tiktoken cache, llama via a sentencepiece ``.model``)
-        are staged on the read-only data volume by the data plane. This resolves the staged path
-        and loads it lazily; it never reaches the network.
+        The reference tokenizers (gpt2 via a tiktoken cache, llama via a sentencepiece ``.model``)
+        are baked into the eval image and/or staged on the read-only data volume. This resolves the
+        staged path and loads it lazily; it never reaches the network. When the dir is unset the
+        staging path is resolved from ``PRISM_REFERENCE_TOKENIZER_DIR`` (baked image).
         """
-        key = name.lower()
-        if key not in REFERENCE_TOKENIZERS:
-            raise ValueError(
-                f"unknown reference tokenizer {name!r}; expected one of {REFERENCE_TOKENIZERS}"
-            )
-        if not self.reference_tokenizer_dir:
-            raise RuntimeError(
-                f"reference tokenizer {name!r} is not staged (reference_tokenizer_dir unset)"
-            )
-        return _load_reference_tokenizer(key, Path(self.reference_tokenizer_dir))
+        from .reference_tokenizers import load_reference_tokenizer
+
+        return load_reference_tokenizer(name, self.reference_tokenizer_dir)
 
 
 @dataclass(frozen=True)
@@ -121,23 +113,3 @@ def import_torch() -> Any:
         return torch
     except Exception as exc:
         raise RuntimeError("PyTorch is required for Prism evaluation") from exc
-
-
-def _load_reference_tokenizer(name: str, root: Path) -> Any:
-    if name == "gpt2":
-        import os
-
-        cache_dir = root / "gpt2"
-        if cache_dir.exists():
-            os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(cache_dir))
-        import tiktoken
-
-        return tiktoken.get_encoding("gpt2")
-    model_path = root / "llama" / "tokenizer.model"
-    if not model_path.exists():
-        raise RuntimeError(f"reference tokenizer 'llama' missing at {model_path}")
-    import sentencepiece  # type: ignore[import-untyped]
-
-    processor = sentencepiece.SentencePieceProcessor()
-    processor.Load(str(model_path))
-    return processor

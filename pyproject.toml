@@ -14,7 +14,9 @@ dependencies = [
   "numpy>=1.26",
   "torch>=2.3",
   "uvicorn[standard]>=0.30",
-  "langchain-openai>=0.2.0"
+  "langchain-openai>=0.2.0",
+  "tiktoken>=0.7",
+  "sentencepiece>=0.2"
 ]
 
 [project.optional-dependencies]
