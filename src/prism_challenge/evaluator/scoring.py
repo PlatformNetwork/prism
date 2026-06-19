@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast
@@ -9,6 +10,17 @@ from prism_challenge.runtime_config import BenchmarkWeights, ScoreWeights
 from .benchmarks.official import benchmark_sanity_component
 from .interface import TrainingRecipe
 from .schemas import PrismRunManifest
+
+# --- Prequential bits-per-byte primary scoring (architecture.md section 5) -------------------
+# The authoritative score is the prequential / online compression metric in bits-per-byte: the
+# AREA UNDER the from-scratch online loss curve (integrated over the whole single-pass run),
+# normalized by the number of raw UTF-8 BYTES covered (tokenizer-agnostic by construction). It is
+# always recomputed from the CHALLENGE-OWNED prism_run_manifest.v2 capture; miner-reported numbers
+# are ignored. The legacy raw-loss ``standardized_lm_quality`` term is retired from the score.
+NATS_TO_BITS = 1.0 / math.log(2.0)
+# A finite/positive sanity band for bits-per-byte; anything outside it is treated as a degenerate
+# (non-scorable) run rather than silently ranked.
+BPB_SANE_MAX = 64.0
 
 ArchitectureComponentName = Literal[
     "learning_scaling_dynamics",
@@ -53,6 +65,138 @@ class ScoreValidationError(ValueError):
     def __init__(self, reasons: list[str] | tuple[str, ...]) -> None:
         self.reasons = tuple(reasons)
         super().__init__("; ".join(self.reasons))
+
+
+@dataclass(frozen=True)
+class PrequentialBpbScore:
+    """Challenge-computed prequential bits-per-byte primary score (architecture.md section 5).
+
+    ``bpb`` is the prequential code-length integrated over the WHOLE single-pass online-loss curve
+    divided by the raw UTF-8 BYTES covered (tokenizer-agnostic). ``final_score`` is a documented
+    monotone transform where a SMALLER bpb yields a BETTER (larger) final_score, so the existing
+    leaderboard ``ORDER BY final_score DESC`` ranks better learners higher. A step-0 / smuggled-
+    weights anomaly drives the anti-cheat multiplier to zero so an anomalously-low bpb is flagged
+    rather than rewarded.
+    """
+
+    bpb: float
+    final_score: float
+    covered_bytes: int
+    sum_neg_log2_likelihood_bits: float
+    cumulative_codelength_bits: float
+    tokens_consumed: int
+    online_loss_samples: int
+    step0_loss: float | None
+    anti_cheat_multiplier: float
+    anomaly: bool
+    flags: tuple[str, ...]
+
+    def metrics_payload(self) -> dict[str, Any]:
+        """Flat metrics for the ``scores`` row (challenge-computed; no raw-loss term)."""
+        return {
+            "prequential_bpb": self.bpb,
+            "bits_per_byte": self.bpb,
+            "final_score": self.final_score,
+            "total_bytes_covered": float(self.covered_bytes),
+            "covered_bytes": float(self.covered_bytes),
+            "sum_neg_log2_likelihood_bits": self.sum_neg_log2_likelihood_bits,
+            "cumulative_codelength_bits": self.cumulative_codelength_bits,
+            "tokens_consumed": float(self.tokens_consumed),
+            "online_loss_samples": float(self.online_loss_samples),
+            "anti_cheat_multiplier": self.anti_cheat_multiplier,
+            "step0_anomaly": float(self.anomaly),
+        }
+
+    def manifest_score_block(self) -> dict[str, Any]:
+        """Challenge-authored ``score`` block merged into prism_run_manifest.v2.json."""
+        return {
+            "schema": "prism_score.v2",
+            "primary_metric": "prequential_bpb",
+            "prequential_bpb": self.bpb,
+            "bits_per_byte": self.bpb,
+            "final_score": self.final_score,
+            "lower_is_better": True,
+            "covered_bytes": self.covered_bytes,
+            "total_bytes_covered": self.covered_bytes,
+            "sum_neg_log2_likelihood_bits": self.sum_neg_log2_likelihood_bits,
+            "cumulative_codelength_bits": self.cumulative_codelength_bits,
+            "tokens_consumed": self.tokens_consumed,
+            "compute_normalization": "tokens_bytes",
+            "wall_clock_term": False,
+            "anti_cheat_multiplier": self.anti_cheat_multiplier,
+            "anomaly": self.anomaly,
+            "flags": list(self.flags),
+            "miner_reported_ignored": True,
+        }
+
+
+def bpb_to_final_score(bpb: float) -> float:
+    """Monotone-decreasing transform of bits-per-byte: lower bpb -> higher (better) final_score."""
+    return 1.0 / (1.0 + max(0.0, float(bpb)))
+
+
+def score_prequential_bpb(
+    manifest: Mapping[str, Any], *, sane_max: float = BPB_SANE_MAX
+) -> PrequentialBpbScore:
+    """Compute the prequential bits-per-byte score from the challenge-owned v2 manifest.
+
+    ``bpb = (sum over consumed tokens of -log2 p(token)) / total_bytes_covered`` where the
+    numerator is the token-weighted online (predict-then-train) negative log-likelihood the
+    challenge captured itself. Raises ``ScoreValidationError`` for a degenerate (zero-coverage,
+    non-finite, or out-of-band) run so it never collapses into a fabricated/0-that-ranks score.
+    """
+    metrics = manifest.get("metrics")
+    if not isinstance(metrics, Mapping):
+        raise ScoreValidationError(["v2 manifest is missing a metrics block"])
+    covered_bytes = _manifest_covered_bytes(manifest, metrics)
+    if covered_bytes <= 0:
+        raise ScoreValidationError(["prequential scoring requires covered_bytes > 0"])
+    sum_nll_nats = float(metrics.get("sum_neg_log_likelihood_nats", 0.0))
+    online_loss = metrics.get("online_loss")
+    online_samples = len(online_loss) if isinstance(online_loss, list) else 0
+    if online_samples == 0:
+        raise ScoreValidationError(["prequential scoring requires a captured online-loss stream"])
+    cumulative_codelength_bits = sum_nll_nats * NATS_TO_BITS
+    bpb = cumulative_codelength_bits / covered_bytes
+    flags: list[str] = []
+    if not math.isfinite(bpb):
+        raise ScoreValidationError(["prequential bpb is not finite"])
+    if bpb <= 0.0:
+        raise ScoreValidationError(["prequential bpb must be positive"])
+    if bpb > sane_max:
+        flags.append("bpb_out_of_band")
+    anti_cheat = manifest.get("anti_cheat")
+    anti_cheat = anti_cheat if isinstance(anti_cheat, Mapping) else {}
+    step0_anomaly = bool(anti_cheat.get("step0_anomaly", False))
+    if step0_anomaly:
+        flags.append("step0_anomaly")
+    if bool(anti_cheat.get("nan_inf_detected", False)):
+        flags.append("nan_inf_detected")
+    anti_cheat_multiplier = 0.0 if step0_anomaly else 1.0
+    final_score_value = bpb_to_final_score(bpb) * anti_cheat_multiplier
+    step0_loss = metrics.get("step0_loss")
+    return PrequentialBpbScore(
+        bpb=bpb,
+        final_score=final_score_value,
+        covered_bytes=covered_bytes,
+        sum_neg_log2_likelihood_bits=cumulative_codelength_bits,
+        cumulative_codelength_bits=cumulative_codelength_bits,
+        tokens_consumed=int(metrics.get("predicted_tokens", metrics.get("tokens_seen", 0)) or 0),
+        online_loss_samples=online_samples,
+        step0_loss=float(step0_loss) if isinstance(step0_loss, int | float) else None,
+        anti_cheat_multiplier=anti_cheat_multiplier,
+        anomaly=step0_anomaly,
+        flags=tuple(flags),
+    )
+
+
+def _manifest_covered_bytes(manifest: Mapping[str, Any], metrics: Mapping[str, Any]) -> int:
+    for source in (metrics, manifest.get("data")):
+        if isinstance(source, Mapping):
+            value = source.get("covered_bytes")
+            if isinstance(value, int | float) and not isinstance(value, bool):
+                return int(value)
+    return 0
 
 
 @dataclass(frozen=True)
@@ -119,53 +263,6 @@ def score_recipe(recipe: TrainingRecipe) -> float:
     batch_score = 1.0 if 1 <= recipe.batch_size <= 64 else 0.5
     opt_score = 1.0 if recipe.optimizer.lower() in {"adamw", "adam", "sgd"} else 0.5
     return max(0.0, min(1.0, 0.45 * lr_score + 0.35 * batch_score + 0.2 * opt_score))
-
-
-def score_architecture_manifest(
-    manifest: PrismRunManifest | dict[str, Any],
-    *,
-    score_weights: ScoreWeights | None = None,
-    benchmark_weights: BenchmarkWeights | None = None,
-) -> OfficialScoreResult:
-    run_manifest = _official_manifest(manifest)
-    weights = _architecture_formula(score_weights)
-    benchmark_component = benchmark_sanity_component(
-        run_manifest.metrics.benchmark_scores,
-        benchmark_weights or BenchmarkWeights(),
-        _score_weights(weights, TRAINING_SCORE_COMPONENTS),
-        track="architecture",
-    )
-    component_values: dict[str, tuple[float, str]] = {
-        "learning_scaling_dynamics": (
-            _learning_scaling_dynamics(run_manifest),
-            "loss.relative_loss_reduction + metrics.learning_speed_slope",
-        ),
-        "standardized_lm_quality": (
-            _standardized_lm_quality(run_manifest),
-            "loss.standardized_eval_loss",
-        ),
-        "compute_efficiency": (_compute_efficiency(run_manifest), "metrics.estimated_flops"),
-        "parameter_efficiency": (_parameter_efficiency(run_manifest), "metrics.parameter_count"),
-        "diagnostics_health": (_diagnostics_health(run_manifest), "metrics.diagnostics"),
-        "robustness_stability": (_robustness_stability(run_manifest), "metrics.loss_vs_tokens"),
-        "benchmark_sanity": (benchmark_component.raw_score, "metrics.benchmark_scores"),
-    }
-    details = {
-        "architecture_id": run_manifest.architecture_id,
-        "architecture_version_id": run_manifest.architecture_version_id,
-        "benchmark_formula_cap": benchmark_component.formula_cap,
-        "benchmark_weights": benchmark_component.benchmark_weights,
-        "loss_normalization_scope": run_manifest.metrics.loss.loss_normalization_scope,
-        "raw_final_loss_used": False,
-    }
-    if run_manifest.metrics.loss.loss_normalization_scope == "architecture_baseline":
-        raise ScoreValidationError(
-            [
-                "architecture official scoring requires fixed_tokenizer or byte_normalized "
-                "standardized loss metadata"
-            ]
-        )
-    return _score_result("architecture", weights, component_values, details)
 
 
 def score_training_manifest(
@@ -254,11 +351,6 @@ def _official_manifest(manifest: PrismRunManifest | dict[str, Any]) -> PrismRunM
         raise ScoreValidationError([str(exc)]) from exc
 
 
-def _architecture_formula(score_weights: ScoreWeights | None) -> dict[str, float]:
-    formula = score_weights.architecture_formula if score_weights else ARCHITECTURE_SCORE_COMPONENTS
-    return _require_exact_formula(formula, ARCHITECTURE_SCORE_COMPONENTS, "architecture")
-
-
 def _training_formula(score_weights: ScoreWeights | None) -> dict[str, float]:
     formula = score_weights.training_formula if score_weights else TRAINING_SCORE_COMPONENTS
     return _require_exact_formula(formula, TRAINING_SCORE_COMPONENTS, "training")
@@ -323,19 +415,11 @@ def _learning_scaling_dynamics(manifest: PrismRunManifest) -> float:
     return _clamp(0.6 * loss.relative_loss_reduction + 0.4 * slope_score)
 
 
-def _standardized_lm_quality(manifest: PrismRunManifest) -> float:
-    return _clamp(1.0 / (1.0 + manifest.metrics.loss.standardized_eval_loss))
-
-
 def _compute_efficiency(manifest: PrismRunManifest) -> float:
     flops_per_token = manifest.metrics.estimated_flops / max(
         float(manifest.metrics.tokens_seen), 1.0
     )
     return _clamp(1.0 / (1.0 + flops_per_token / 1_000_000.0))
-
-
-def _parameter_efficiency(manifest: PrismRunManifest) -> float:
-    return _clamp(1.0 / (1.0 + manifest.metrics.parameter_count / 1_000_000_000.0))
 
 
 def _diagnostics_health(manifest: PrismRunManifest) -> float:

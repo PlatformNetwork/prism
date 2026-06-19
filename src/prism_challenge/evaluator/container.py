@@ -686,6 +686,7 @@ class _OnlineLossCapture:
         self.consumed_batches = 0
         self.consumed_tokens = 0
         self.consumed_documents = 0
+        self.predicted_tokens = 0
         self.shard_offsets = []
         self.nan_inf_batches = 0
         self.sum_nll_nats = 0.0
@@ -773,8 +774,13 @@ class _OnlineLossCapture:
         if not math.isfinite(loss_value):
             self.nan_inf_batches += 1
             loss_value = self.worst_case_nats
+        # ``loss_value`` is the MEAN next-token nats over the batch's predicted positions; the
+        # prequential code-length needs the TOKEN-WEIGHTED total, so multiply by the number of
+        # scored next-token predictions (rows * (cols - 1)).
+        predicted = rows * max(cols - 1, 0)
         self.online_loss.append(loss_value)
-        self.sum_nll_nats += loss_value
+        self.sum_nll_nats += loss_value * predicted
+        self.predicted_tokens += predicted
         self.covered_bytes += nbytes
         self.covered_bytes_cumulative.append(self.covered_bytes)
         self.consumed_batches += 1
@@ -974,6 +980,7 @@ online_loss = list(capture.online_loss) if capture is not None else []
 covered_bytes_cumulative = list(capture.covered_bytes_cumulative) if capture is not None else []
 covered_bytes = int(round(capture.covered_bytes)) if capture is not None else 0
 sum_nll_nats = capture.sum_nll_nats if capture is not None else 0.0
+predicted_tokens = capture.predicted_tokens if capture is not None else 0
 nan_inf_batches = capture.nan_inf_batches if capture is not None else 0
 consumed_documents = capture.consumed_documents if capture is not None else 0
 shard_offsets = capture.shard_offsets if capture is not None else []
@@ -988,6 +995,26 @@ step0_anomaly = step0_loss is not None and step0_loss < step0_threshold
 zero_forward = consumed_batches == 0 or covered_bytes <= 0
 no_learning = zero_forward
 distinct_offsets = len({tuple(item) for item in shard_offsets})
+
+# --- challenge-computed prequential bits-per-byte (architecture.md section 5) ---
+# bpb = (sum over consumed tokens of -log2 p(token)) / total raw UTF-8 BYTES covered. The
+# numerator is the TOKEN-WEIGHTED online negative log-likelihood the challenge captured itself
+# (the AREA UNDER the whole single-pass loss curve), so the score is tokenizer-agnostic and
+# compute-normalized (tokens/bytes, never wall-clock). final_score is a monotone transform where
+# a SMALLER bpb yields a BETTER (larger) score; a step-0 anomaly zeroes the anti-cheat multiplier
+# so smuggled-weights runs are flagged, never rewarded. Mirrors scoring.score_prequential_bpb.
+sum_neg_log2_likelihood_bits = sum_nll_nats / math.log(2.0)
+prequential_bpb = (
+    sum_neg_log2_likelihood_bits / covered_bytes
+    if covered_bytes > 0 and math.isfinite(sum_neg_log2_likelihood_bits)
+    else None
+)
+score_anti_cheat_multiplier = 0.0 if step0_anomaly else 1.0
+score_final = (
+    (1.0 / (1.0 + prequential_bpb)) * score_anti_cheat_multiplier
+    if prequential_bpb is not None and prequential_bpb > 0.0
+    else None
+)
 
 
 def _write_challenge_manifest():
@@ -1027,8 +1054,33 @@ def _write_challenge_manifest():
             "random_init_baseline_nats": baseline_nats,
             "consumed_batches": consumed_batches,
             "covered_bytes": covered_bytes,
+            "predicted_tokens": predicted_tokens,
+            "tokens_seen": predicted_tokens,
             "sum_neg_log_likelihood_nats": sum_nll_nats,
+            "sum_neg_log2_likelihood_bits": sum_neg_log2_likelihood_bits,
+            "cumulative_codelength_bits": sum_neg_log2_likelihood_bits,
+            "prequential_bpb": prequential_bpb,
+            "bits_per_byte": prequential_bpb,
+            "total_bytes_covered": covered_bytes,
             "nan_inf_batches": nan_inf_batches,
+        },
+        "score": {
+            "schema": "prism_score.v2",
+            "primary_metric": "prequential_bpb",
+            "prequential_bpb": prequential_bpb,
+            "bits_per_byte": prequential_bpb,
+            "final_score": score_final,
+            "lower_is_better": True,
+            "covered_bytes": covered_bytes,
+            "total_bytes_covered": covered_bytes,
+            "sum_neg_log2_likelihood_bits": sum_neg_log2_likelihood_bits,
+            "cumulative_codelength_bits": sum_neg_log2_likelihood_bits,
+            "tokens_consumed": predicted_tokens,
+            "compute_normalization": "tokens_bytes",
+            "wall_clock_term": False,
+            "anti_cheat_multiplier": score_anti_cheat_multiplier,
+            "anomaly": step0_anomaly,
+            "miner_reported_ignored": True,
         },
         "anti_cheat": {
             "step0_anomaly": step0_anomaly,

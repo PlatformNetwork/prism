@@ -32,7 +32,7 @@ from .evaluator.lium_client import LiumJob
 from .evaluator.modes import execution_mode_from_value
 from .evaluator.review_rules import ReviewRule, load_review_rules
 from .evaluator.sandbox import SandboxViolation, inspect_code
-from .evaluator.scoring import final_score
+from .evaluator.scoring import ScoreValidationError, final_score, score_prequential_bpb
 from .evaluator.static_instantiation import check_build_model_static
 from .gpu_scheduler import (
     GpuLease,
@@ -55,6 +55,15 @@ CONTAINER_EXECUTION_BACKENDS = frozenset(
 SUPPORTED_EXECUTION_BACKENDS = CONTAINER_EXECUTION_BACKENDS
 
 logger = logging.getLogger(__name__)
+
+
+def _is_v2_run_manifest(manifest: Any) -> bool:
+    """True when the container returned a challenge-authored prism_run_manifest.v2 with metrics."""
+    return (
+        isinstance(manifest, dict)
+        and manifest.get("schema_version") == "prism_run_manifest.v2"
+        and isinstance(manifest.get("metrics"), dict)
+    )
 
 
 @dataclass(frozen=True)
@@ -397,14 +406,22 @@ class PrismWorker:
                 run_manifest_path=result.run_manifest_path,
                 attempt=attempt,
             )
-            await self._finalize_remote_result(
-                submission_id=submission_id,
-                arch_hash=arch_hash,
-                anti_multiplier=anti.multiplier,
-                diversity_bonus=anti.diversity_bonus,
-                metrics=result.metrics,
-                component_review=component_review,
-            )
+            if _is_v2_run_manifest(result.run_manifest):
+                await self._finalize_container_score(
+                    submission_id=submission_id,
+                    arch_hash=arch_hash,
+                    anti=anti,
+                    manifest=cast(dict[str, Any], result.run_manifest),
+                )
+            else:
+                await self._finalize_remote_result(
+                    submission_id=submission_id,
+                    arch_hash=arch_hash,
+                    anti_multiplier=anti.multiplier,
+                    diversity_bonus=anti.diversity_bonus,
+                    metrics=result.metrics,
+                    component_review=component_review,
+                )
             return submission_id
         except InfrastructureEvaluationError as exc:
             await self._record_container_job(
@@ -983,6 +1000,52 @@ class PrismWorker:
                             submission_id,
                         ),
                     )
+
+    async def _finalize_container_score(
+        self,
+        *,
+        submission_id: str,
+        arch_hash: str,
+        anti: Any,
+        manifest: dict[str, Any],
+    ) -> None:
+        """Finalize a container run using the CHALLENGE-OWNED prequential bits-per-byte score.
+
+        The authoritative score is recomputed by ``scoring.score_prequential_bpb`` from the
+        challenge-authored ``prism_run_manifest.v2`` (the legacy NAS q_arch/q_recipe derivation and
+        the component-reward branching are NOT on this path, so they no longer affect the score).
+        A degenerate run that cannot yield a finite/positive bpb is failed rather than scored.
+        """
+        try:
+            score = score_prequential_bpb(manifest)
+        except ScoreValidationError as exc:
+            await self._fail_submission(submission_id, f"prequential scoring failed: {exc}")
+            return
+        anti_multiplier = max(0.0, min(1.0, float(getattr(anti, "multiplier", 1.0))))
+        final_score_value = max(0.0, score.final_score * anti_multiplier)
+        metrics_payload = score.metrics_payload()
+        metrics_payload["arch_hash"] = arch_hash
+        async with self.repository.database.connect() as conn:
+            await conn.execute(
+                "INSERT OR REPLACE INTO scores("
+                "submission_id, q_arch, q_recipe, anti_cheat_multiplier, diversity_bonus,"
+                "penalty, final_score, metrics, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    submission_id,
+                    final_score_value,
+                    0.0,
+                    score.anti_cheat_multiplier * anti_multiplier,
+                    0.0,
+                    0.0,
+                    final_score_value,
+                    dumps(metrics_payload),
+                    now_iso(),
+                ),
+            )
+            await conn.execute(
+                "UPDATE submissions SET status=?, arch_hash=?, updated_at=? WHERE id=?",
+                (SubmissionStatus.COMPLETED.value, arch_hash, now_iso(), submission_id),
+            )
 
     async def poll_remote_jobs(self) -> list[str]:
         if self.lium is None:
