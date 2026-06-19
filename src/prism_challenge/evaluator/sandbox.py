@@ -11,6 +11,7 @@ from .interface import PrismContext, TrainingRecipe
 from .schemas import DeterministicEvidence
 
 ALLOWED_IMPORT_ROOTS = {
+    "__future__",
     "collections",
     "dataclasses",
     "math",
@@ -261,6 +262,8 @@ def validate_miner_contract(
     allowed_top_level = (ast.ClassDef, ast.FunctionDef, ast.Import, ast.ImportFrom)
     for node in tree.body:
         if isinstance(node, allowed_top_level):
+            continue
+        if _is_docstring(node):
             continue
         if isinstance(node, ast.Assign | ast.AnnAssign) and _constant_assignment(node):
             continue
@@ -595,6 +598,14 @@ def _line_at(code: str, line: int) -> str:
 
 def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _is_docstring(node: ast.stmt) -> bool:
+    return (
+        isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    )
 
 
 def _constant_assignment(node: ast.Assign | ast.AnnAssign) -> bool:

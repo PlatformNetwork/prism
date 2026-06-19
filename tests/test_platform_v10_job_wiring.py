@@ -16,9 +16,14 @@ from prism_challenge.evaluator.training import training_recipe_fingerprint
 from prism_challenge.gpu_scheduler import GpuLease
 from prism_challenge.sdk.executors.docker import DockerExecutorError, DockerRunResult
 
+# The static param-count phase (architecture.md section 4.1) instantiates build_model under the
+# forced seed in the worker before any GPU work, so build_model must construct a real nn.Module.
+# The actual training still runs only in the (mocked) remote Platform broker container.
 REMOTE_ONLY_CODE = """
+import torch
+
 def build_model(ctx):
-    raise RuntimeError('fake Platform broker must not execute code in unit tests')
+    return torch.nn.Linear(8, 8)
 
 def get_recipe(ctx):
     return {'learning_rate': 0.0003, 'batch_size': 2}

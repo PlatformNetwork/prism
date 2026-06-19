@@ -9,9 +9,14 @@ from prism_challenge.app import create_app
 from prism_challenge.config import PrismSettings
 from prism_challenge.sdk.executors.docker import DockerRunResult
 
+# The static param-count phase (architecture.md section 4.1) instantiates build_model under the
+# forced seed in the worker before any GPU work, so build_model must construct a real nn.Module.
+# The actual training still runs only in the (mocked) remote container.
 REMOTE_ONLY_CODE = """
+import torch
+
 def build_model(ctx):
-    raise RuntimeError('container must not execute submitted model code in remote mode')
+    return torch.nn.Linear(8, 8)
 
 def get_recipe(ctx):
     return {'learning_rate': 0.0003, 'batch_size': 2}

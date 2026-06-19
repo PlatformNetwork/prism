@@ -41,6 +41,11 @@ class PrismSettings(ChallengeSettings):
     max_layers: int = 96
     max_sequence_length: int = 512
     sequence_length: int = 128
+    # Static build_model instantiation gate (architecture.md section 4.1): the param-count phase
+    # instantiates build_model under the forced seed in a bounded child process before any GPU
+    # work, so hostile construction is time/memory-bounded at the static phase.
+    static_instantiation_timeout_seconds: float = 30.0
+    static_instantiation_memory_headroom_bytes: int = 8_589_934_592
     fineweb_sample_count: int = 128
     execution_backend: str = "platform_gpu"
     prism_role: str = "master"

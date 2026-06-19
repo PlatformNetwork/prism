@@ -49,6 +49,7 @@ from .evaluator.sandbox import (
 )
 from .evaluator.schemas import ExecutionMode, PrismRunManifest
 from .evaluator.scoring import final_score, score_recipe
+from .evaluator.static_instantiation import check_build_model_static
 from .gpu_scheduler import (
     GpuLease,
     GpuLeaseScheduler,
@@ -492,6 +493,7 @@ class PrismWorker:
             component_review = self._component_review(snapshot)
             code = review.code
             report = self._inspect_project_snapshot(snapshot, code)
+            await self._static_model_instantiation_check(snapshot, component_review)
         except (SandboxViolation, SyntaxError) as exc:
             await self._reject_submission(submission_id, str(exc))
             return submission_id
@@ -767,6 +769,29 @@ class PrismWorker:
                 artifact_path=file.path,
             )
         return report
+
+    async def _static_model_instantiation_check(
+        self,
+        snapshot: source_similarity.SourceSnapshot,
+        component_review: ComponentReview,
+    ) -> None:
+        """Instantiate build_model under the forced seed before any GPU work.
+
+        Rejects non-nn.Module returns, surfaces construction errors cleanly, and bounds hostile
+        construction (infinite loop / memory balloon) at the static phase.
+        """
+        components = component_review.components
+        entrypoint = components.architecture_entrypoint or components.entrypoint
+        files = {file.path: file.content for file in snapshot.python_files}
+        await asyncio.to_thread(
+            check_build_model_static,
+            files,
+            entrypoint,
+            ctx=self.ctx,
+            build_model_symbol=components.build_model_symbol,
+            timeout_seconds=self.settings.static_instantiation_timeout_seconds,
+            memory_headroom_bytes=self.settings.static_instantiation_memory_headroom_bytes,
+        )
 
     def _local_import_roots(self, snapshot: source_similarity.SourceSnapshot) -> set[str]:
         return {
