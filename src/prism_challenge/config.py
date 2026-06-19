@@ -187,6 +187,17 @@ class PrismSettings(ChallengeSettings):
         default="/data/fineweb-edu/train",
         validation_alias=AliasChoices("PRISM_PLATFORM_EVAL_DATA_DIR", "PRISM_EVAL_DATA_DIR"),
     )
+    # Secret held-out val split (architecture.md sections 5, 6). It is NEVER bind-mounted into the
+    # eval container (VAL-HARNESS-015 / VAL-CHEAT-007) and never exposed via PrismContext; only the
+    # CHALLENGE SCORER reads it (host-side) to compute the held-out delta-over-random-init
+    # tie-breaker and the train-vs-held-out anti-memorization gap. An unset/empty path simply
+    # skips the held-out delta (the run still scores on prequential bpb).
+    platform_eval_val_data_dir: str = Field(
+        default="/data/fineweb-edu/val",
+        validation_alias=AliasChoices(
+            "PRISM_PLATFORM_EVAL_VAL_DATA_DIR", "PRISM_EVAL_VAL_DATA_DIR"
+        ),
+    )
     platform_eval_reference_tokenizer_dir: str = Field(
         default="/opt/reference-tokenizers",
         validation_alias=AliasChoices(

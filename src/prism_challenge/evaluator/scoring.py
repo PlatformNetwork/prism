@@ -22,6 +22,16 @@ NATS_TO_BITS = 1.0 / math.log(2.0)
 # (non-scorable) run rather than silently ranked.
 BPB_SANE_MAX = 64.0
 
+# --- Held-out delta tie-breaker + anti-memorization gap (architecture.md sections 5, 6) ----------
+# The held-out delta-over-random-init (``bpb(random-init twin on val) - bpb(trained on val)``) is a
+# TIE-BREAKER: a larger improvement ranks better, but it must not override the primary bpb axis, so
+# it contributes only a tiny term folded into ``final_score`` (a lexicographic refinement is the
+# job of the leaderboard-determinism feature). The train-vs-held-out gap flags memorization: an
+# excessive gap penalizes the score so a memorizer ranks below an equivalent non-memorizing run.
+HELDOUT_DELTA_TIE_BREAK_WEIGHT = 1e-3
+MEMORIZATION_GAP_THRESHOLD_BPB = 1.0
+MEMORIZATION_PENALTY_FACTOR = 0.5
+
 ArchitectureComponentName = Literal[
     "learning_scaling_dynamics",
     "standardized_lm_quality",
@@ -90,10 +100,18 @@ class PrequentialBpbScore:
     anti_cheat_multiplier: float
     anomaly: bool
     flags: tuple[str, ...]
+    # Held-out delta tie-breaker + anti-memorization gap (architecture.md sections 5, 6). These are
+    # ``None`` when no secret val split was scored for the run (held-out simply skipped).
+    heldout_delta: float | None = None
+    val_bpb_trained: float | None = None
+    val_bpb_random_init: float | None = None
+    train_heldout_gap: float | None = None
+    memorization_flag: bool = False
+    memorization_penalty: float = 1.0
 
     def metrics_payload(self) -> dict[str, Any]:
         """Flat metrics for the ``scores`` row (challenge-computed; no raw-loss term)."""
-        return {
+        payload: dict[str, Any] = {
             "prequential_bpb": self.bpb,
             "bits_per_byte": self.bpb,
             "final_score": self.final_score,
@@ -105,11 +123,24 @@ class PrequentialBpbScore:
             "online_loss_samples": float(self.online_loss_samples),
             "anti_cheat_multiplier": self.anti_cheat_multiplier,
             "step0_anomaly": float(self.anomaly),
+            "memorization_flag": float(self.memorization_flag),
+            "memorization_penalty": self.memorization_penalty,
         }
+        if self.heldout_delta is not None:
+            payload["heldout_delta"] = self.heldout_delta
+            payload["held_out_delta"] = self.heldout_delta
+        if self.val_bpb_trained is not None:
+            payload["val_bpb_trained"] = self.val_bpb_trained
+        if self.val_bpb_random_init is not None:
+            payload["val_bpb_random_init"] = self.val_bpb_random_init
+        if self.train_heldout_gap is not None:
+            payload["train_heldout_gap"] = self.train_heldout_gap
+            payload["train_val_gap"] = self.train_heldout_gap
+        return payload
 
     def manifest_score_block(self) -> dict[str, Any]:
         """Challenge-authored ``score`` block merged into prism_run_manifest.v2.json."""
-        return {
+        block: dict[str, Any] = {
             "schema": "prism_score.v2",
             "primary_metric": "prequential_bpb",
             "prequential_bpb": self.bpb,
@@ -126,8 +157,21 @@ class PrequentialBpbScore:
             "anti_cheat_multiplier": self.anti_cheat_multiplier,
             "anomaly": self.anomaly,
             "flags": list(self.flags),
+            "tie_breaker": "heldout_delta",
+            "memorization_flag": self.memorization_flag,
+            "memorization_penalty": self.memorization_penalty,
             "miner_reported_ignored": True,
         }
+        if self.heldout_delta is not None:
+            block["heldout_delta"] = self.heldout_delta
+            block["held_out_delta"] = self.heldout_delta
+        if self.val_bpb_trained is not None:
+            block["val_bpb_trained"] = self.val_bpb_trained
+        if self.val_bpb_random_init is not None:
+            block["val_bpb_random_init"] = self.val_bpb_random_init
+        if self.train_heldout_gap is not None:
+            block["train_heldout_gap"] = self.train_heldout_gap
+        return block
 
 
 def bpb_to_final_score(bpb: float) -> float:
@@ -173,7 +217,20 @@ def score_prequential_bpb(
     if bool(anti_cheat.get("nan_inf_detected", False)):
         flags.append("nan_inf_detected")
     anti_cheat_multiplier = 0.0 if step0_anomaly else 1.0
-    final_score_value = bpb_to_final_score(bpb) * anti_cheat_multiplier
+    heldout = _read_heldout(manifest, metrics, anti_cheat, train_bpb=bpb)
+    if heldout.memorization_flag:
+        flags.append("memorization_gap")
+    # The held-out delta refines ranking only as a TIE-BREAKER (tiny additive term, monotone in the
+    # delta) so a strictly lower bpb is never ranked worse purely on the primary axis; an excessive
+    # train-vs-held-out gap multiplies in a memorization penalty so a memorizer ranks below an
+    # equivalent non-memorizing run.
+    base = bpb_to_final_score(bpb)
+    tie_break = (
+        HELDOUT_DELTA_TIE_BREAK_WEIGHT * math.tanh(heldout.delta)
+        if heldout.delta is not None
+        else 0.0
+    )
+    final_score_value = (base * heldout.penalty + tie_break) * anti_cheat_multiplier
     step0_loss = metrics.get("step0_loss")
     return PrequentialBpbScore(
         bpb=bpb,
@@ -187,7 +244,80 @@ def score_prequential_bpb(
         anti_cheat_multiplier=anti_cheat_multiplier,
         anomaly=step0_anomaly,
         flags=tuple(flags),
+        heldout_delta=heldout.delta,
+        val_bpb_trained=heldout.val_bpb_trained,
+        val_bpb_random_init=heldout.val_bpb_random_init,
+        train_heldout_gap=heldout.gap,
+        memorization_flag=heldout.memorization_flag,
+        memorization_penalty=heldout.penalty,
     )
+
+
+@dataclass(frozen=True)
+class _HeldoutView:
+    delta: float | None
+    val_bpb_trained: float | None
+    val_bpb_random_init: float | None
+    gap: float | None
+    memorization_flag: bool
+    penalty: float
+
+
+def _read_heldout(
+    manifest: Mapping[str, Any],
+    metrics: Mapping[str, Any],
+    anti_cheat: Mapping[str, Any],
+    *,
+    train_bpb: float,
+) -> _HeldoutView:
+    """Read the host-computed held-out delta + anti-memorization gap from the v2 manifest.
+
+    The held-out delta + gap are populated host-side (``evaluator/heldout.py``) into the metrics /
+    score blocks. When absent (no secret val split scored) the run is graded on prequential bpb
+    alone with no tie-break and no penalty.
+    """
+    score_block = manifest.get("score")
+    score_block = score_block if isinstance(score_block, Mapping) else {}
+    delta = _coerce_float(_first_present(metrics, score_block, ("heldout_delta", "held_out_delta")))
+    val_trained = _coerce_float(_first_present(metrics, score_block, ("val_bpb_trained",)))
+    val_random = _coerce_float(_first_present(metrics, score_block, ("val_bpb_random_init",)))
+    gap = _coerce_float(
+        _first_present(metrics, score_block, ("train_heldout_gap", "train_val_gap"))
+    )
+    if gap is None and val_trained is not None and math.isfinite(train_bpb):
+        gap = val_trained - train_bpb
+    explicit_flag = bool(
+        metrics.get("memorization_flag")
+        or score_block.get("memorization_flag")
+        or anti_cheat.get("memorization_flag")
+    )
+    memorization_flag = explicit_flag or (gap is not None and gap > MEMORIZATION_GAP_THRESHOLD_BPB)
+    penalty = MEMORIZATION_PENALTY_FACTOR if memorization_flag else 1.0
+    return _HeldoutView(
+        delta=delta,
+        val_bpb_trained=val_trained,
+        val_bpb_random_init=val_random,
+        gap=gap,
+        memorization_flag=memorization_flag,
+        penalty=penalty,
+    )
+
+
+def _first_present(
+    primary: Mapping[str, Any], secondary: Mapping[str, Any], keys: tuple[str, ...]
+) -> Any:
+    for source in (primary, secondary):
+        for key in keys:
+            if key in source and source[key] is not None:
+                return source[key]
+    return None
+
+
+def _coerce_float(value: Any) -> float | None:
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
 
 
 def _manifest_covered_bytes(manifest: Mapping[str, Any], metrics: Mapping[str, Any]) -> int:

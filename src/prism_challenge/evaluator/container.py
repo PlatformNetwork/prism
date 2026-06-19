@@ -17,13 +17,19 @@ from ..sdk.executors.docker import (
     DockerMount,
     DockerRunSpec,
 )
+from .heldout import HeldoutResult, compute_heldout_metrics
 from .interface import PrismContext
 from .modes import execution_mode_from_value
 from .schemas import RUN_MANIFEST_V2_FILENAME, DeterministicEvidence, ExecutionMode
+from .scoring import ScoreValidationError, score_prequential_bpb
 from .source_similarity import SourceFile
 
 DEFAULT_MASTER_ADDR = "127.0.0.1"
 DEFAULT_MASTER_PORT = 29500
+# Name of the trained-weights artifact the in-container runner writes and the HOST scorer loads to
+# compute the held-out delta on the SECRET val split (kept in sync with the runner script's
+# ``TRAINED_STATE_FILENAME``).
+TRAINED_STATE_ARTIFACT = "trained_state.pt"
 
 
 @dataclass(frozen=True)
@@ -196,6 +202,14 @@ class PrismContainerEvaluator:
                     ),
                 )
             manifest = _read_run_manifest(artifact_output / RUN_MANIFEST_V2_FILENAME)
+            if manifest is not None:
+                manifest = self._augment_with_heldout(
+                    manifest,
+                    files=payload_files,
+                    architecture_entrypoint=arch_entry,
+                    build_model_symbol=build_model_symbol,
+                    artifact_output=artifact_output,
+                )
             return ContainerEvaluationResult(
                 container_name=result.container_name,
                 metrics=(
@@ -222,6 +236,46 @@ class PrismContainerEvaluator:
                 pass
         artifact_output.mkdir(parents=True, exist_ok=True)
         return artifact_output
+
+    def _augment_with_heldout(
+        self,
+        manifest: dict[str, Any],
+        *,
+        files: tuple[SourceFile, ...],
+        architecture_entrypoint: str,
+        build_model_symbol: str,
+        artifact_output: Path,
+    ) -> dict[str, Any]:
+        """Augment the v2 manifest with the host-computed held-out delta + anti-memorization gap.
+
+        The SECRET val split is never mounted into the eval container; the host scorer loads the
+        trained weights the runner persisted, runs them and a forced-seed random-init twin on val,
+        and folds the delta tie-breaker + gap penalty into the challenge-authored score block. A
+        missing trained-weights artifact or unavailable val split simply skips the held-out delta
+        (the run still scores on prequential bpb), so this never fails the run.
+        """
+        try:
+            result = compute_heldout_metrics(
+                files={file.path: file.content for file in files},
+                entrypoint=architecture_entrypoint,
+                build_model_symbol=build_model_symbol,
+                ctx=self.ctx,
+                trained_state_path=artifact_output / TRAINED_STATE_ARTIFACT,
+                val_data_dir=self.settings.platform_eval_val_data_dir,
+                train_bpb=_manifest_train_bpb(manifest),
+            )
+        except Exception:  # noqa: BLE001 - held-out is auxiliary; never fail the run on it
+            return manifest
+        if result is None:
+            return manifest
+        _merge_heldout_into_manifest(manifest, result)
+        try:
+            (artifact_output / RUN_MANIFEST_V2_FILENAME).write_text(
+                json.dumps(manifest, sort_keys=True, indent=2), encoding="utf-8"
+            )
+        except OSError:
+            pass
+        return manifest
 
     def _mounts(self, workspace: Path, artifact_output: Path) -> tuple[DockerMount, ...]:
         # The locked FineWeb-Edu train split + reference tokenizers are bind-mounted READ-ONLY by
@@ -458,6 +512,40 @@ def _parse_metrics(stdout: str) -> dict[str, float]:
     raise RuntimeError("Prism container evaluation did not return metrics")
 
 
+def _manifest_train_bpb(manifest: dict[str, Any]) -> float | None:
+    """The prequential (online train) bits-per-byte from the v2 manifest, if present."""
+    for key in ("metrics", "score"):
+        block = manifest.get(key)
+        if isinstance(block, dict):
+            value = block.get("prequential_bpb", block.get("bits_per_byte"))
+            if isinstance(value, int | float) and not isinstance(value, bool):
+                return float(value)
+    return None
+
+
+def _merge_heldout_into_manifest(manifest: dict[str, Any], result: HeldoutResult) -> None:
+    """Fold the host-computed held-out delta + anti-memorization gap into the v2 manifest blocks.
+
+    The metrics/anti_cheat blocks carry the raw held-out values; the ``score`` block is recomputed
+    by ``scoring.score_prequential_bpb`` so ``final_score`` reflects the delta tie-break + the
+    memorization penalty (single source of truth shared with the queue finalizer).
+    """
+    metrics = manifest.get("metrics")
+    if isinstance(metrics, dict):
+        metrics.update(result.as_metrics())
+    anti_cheat = manifest.get("anti_cheat")
+    if isinstance(anti_cheat, dict):
+        anti_cheat["memorization_flag"] = result.memorization_flag
+        if result.train_heldout_gap is not None:
+            anti_cheat["memorization_gap"] = result.train_heldout_gap
+            anti_cheat["train_heldout_gap"] = result.train_heldout_gap
+    try:
+        recomputed = score_prequential_bpb(manifest)
+    except ScoreValidationError:
+        return
+    manifest["score"] = recomputed.manifest_score_block()
+
+
 def _read_run_manifest(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
@@ -536,6 +624,10 @@ from pathlib import Path
 
 MANIFEST_GLOB = "prism_run_manifest*.json"
 CHALLENGE_MANIFEST_NAME = "prism_run_manifest.v2.json"
+# The challenge persists the trained model's weights (state_dict) so the HOST scorer can compute
+# the held-out delta-over-random-init on the SECRET val split, which is NEVER mounted into this
+# network=none container (architecture.md sections 5, 6; VAL-HARNESS-015 / VAL-CHEAT-007).
+TRAINED_STATE_FILENAME = "trained_state.pt"
 # Step-0 (forced random init) loss must sit near the from-scratch baseline (~ln(vocab) nats);
 # an impossibly-low initial loss is the smuggled-pretrained-weights anomaly signal.
 STEP0_ANOMALY_FRACTION = 0.5
@@ -691,6 +783,10 @@ class _OnlineLossCapture:
         self.nan_inf_batches = 0
         self.sum_nll_nats = 0.0
         self.started = False
+        # Handle to the model the miner trained on the instrumented batches; the challenge persists
+        # its weights so the HOST scorer can compute the held-out delta on the SECRET val split
+        # (never mounted into this network=none container). See architecture.md sections 5, 6.
+        self.model = None
 
     def _encode(self, text, raw_bytes):
         tokenizer = self.tokenizer
@@ -790,6 +886,7 @@ class _OnlineLossCapture:
         if self.started:
             return
         self.started = True
+        self.model = model
         needed = self.seq_len * self.batch_size
         buffer = []
         for token_id, weight in self._token_stream():
@@ -1015,6 +1112,11 @@ score_final = (
     if prequential_bpb is not None and prequential_bpb > 0.0
     else None
 )
+trained_model = getattr(capture, "model", None) if capture is not None else None
+# The held-out delta + anti-memorization gap are computed HOST-SIDE on the SECRET val split (not
+# mounted here); the runner only persists the trained weights so the scorer can run the twin and
+# the trained model on val. ``trained_state_file`` is filled in below once the save succeeds.
+trained_state_file = None
 
 
 def _write_challenge_manifest():
@@ -1090,10 +1192,30 @@ def _write_challenge_manifest():
             "no_learning": no_learning,
             "zero_forward": zero_forward,
         },
+        "artifacts": {
+            # The held-out delta is computed HOST-SIDE from these weights on the SECRET val split.
+            "trained_state": trained_state_file,
+        },
         "miner_reported_ignored": True,
     }
     out = Path(artifacts_dir) / CHALLENGE_MANIFEST_NAME
     out.write_text(json.dumps(manifest, sort_keys=True, indent=2), encoding="utf-8")
+
+
+def _save_trained_state():
+    # Persist the trained weights (CPU state_dict) so the host scorer can run the trained model and
+    # a forced-seed random-init twin on the SECRET val split. Best-effort: a save failure only
+    # skips the held-out delta; the run still scores on prequential bpb.
+    global trained_state_file
+    if zero_forward or trained_model is None:
+        return
+    try:
+        state = {key: value.detach().to("cpu") for key, value in trained_model.state_dict().items()}
+        torch.save(state, Path(artifacts_dir) / TRAINED_STATE_FILENAME)
+        trained_state_file = TRAINED_STATE_FILENAME
+    except Exception as exc:  # noqa: BLE001 - never fail the run on a held-out artifact save
+        sys.stderr.write("PRISM_RUNNER: trained-state save skipped: " + repr(exc) + "\n")
+        trained_state_file = None
 
 
 if rank == 0:
@@ -1104,6 +1226,7 @@ if rank == 0:
                 stale.unlink()
             except OSError:
                 pass
+    _save_trained_state()
     _write_challenge_manifest()
     if no_learning:
         _fail(
