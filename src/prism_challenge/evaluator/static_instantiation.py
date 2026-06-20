@@ -80,37 +80,44 @@ def check_build_model_static(
     before any GPU lease/job is created.
     """
     cap = ctx.max_parameters if max_parameters is None else max_parameters
-    parent_conn, child_conn = _MP_CONTEXT.Pipe(duplex=False)
-    proc = _MP_CONTEXT.Process(
-        target=_child_instantiate,
-        args=(
-            dict(files),
-            entrypoint,
-            build_model_symbol,
-            ctx,
-            int(memory_headroom_bytes),
-            child_conn,
-        ),
-    )
-    proc.start()
-    child_conn.close()
     result: tuple[str, object] | None = None
-    try:
-        if parent_conn.poll(timeout_seconds):
-            try:
-                result = parent_conn.recv()
-            except EOFError:
-                result = None
-    finally:
-        if proc.is_alive():
-            proc.terminate()
-            proc.join(5)
+    # The PARENT owns the scratch workdir so it is always removed even when the child is
+    # terminated/killed (timeout / over-budget) before its own cleanup could run; the child only
+    # writes the miner files into it. This is what prevents a leaked /tmp dir per static check.
+    with tempfile.TemporaryDirectory(
+        prefix="prism-static-instantiate-", ignore_cleanup_errors=True
+    ) as workdir:
+        parent_conn, child_conn = _MP_CONTEXT.Pipe(duplex=False)
+        proc = _MP_CONTEXT.Process(
+            target=_child_instantiate,
+            args=(
+                dict(files),
+                entrypoint,
+                build_model_symbol,
+                ctx,
+                int(memory_headroom_bytes),
+                workdir,
+                child_conn,
+            ),
+        )
+        proc.start()
+        child_conn.close()
+        try:
+            if parent_conn.poll(timeout_seconds):
+                try:
+                    result = parent_conn.recv()
+                except EOFError:
+                    result = None
+        finally:
             if proc.is_alive():
-                proc.kill()
+                proc.terminate()
+                proc.join(5)
+                if proc.is_alive():
+                    proc.kill()
+                    proc.join()
+            else:
                 proc.join()
-        else:
-            proc.join()
-        parent_conn.close()
+            parent_conn.close()
 
     if result is None:
         raise SandboxViolation(
@@ -165,6 +172,7 @@ def _child_instantiate(
     symbol: str,
     ctx: PrismContext,
     memory_headroom_bytes: int,
+    workdir: str,
     conn,
 ) -> None:
     try:
@@ -181,7 +189,6 @@ def _child_instantiate(
             except (ValueError, OSError):
                 pass
 
-        workdir = tempfile.mkdtemp(prefix="prism-static-instantiate-")
         for rel_path, content in files.items():
             dest = os.path.join(workdir, rel_path)
             parent = os.path.dirname(dest)
@@ -213,7 +220,7 @@ def _child_instantiate(
         if not isinstance(model, torch.nn.Module):
             conn.send(("not_module", type(model).__name__))
             return
-        param_count = int(sum(int(param.numel()) for param in model.parameters()))
+        param_count = _realized_param_count(model, torch, ctx)
         conn.send(("ok", param_count))
     except BaseException as exc:  # noqa: BLE001 - report any failure cleanly to the parent
         try:
@@ -226,6 +233,53 @@ def _child_instantiate(
         except Exception:
             pass
         os._exit(0)
+
+
+def _realized_param_count(model: Any, torch: Any, ctx: PrismContext) -> int:
+    """Count the REALIZED parameters, materializing lazy/dynamic params first.
+
+    ``LazyLinear``, params created in the first ``forward``, and config-driven widths are not yet
+    allocated after construction (and ``numel()`` even raises on a lazy/uninitialized parameter),
+    so a naive count would let an over-cap model hide behind deferred construction. A best-effort
+    dummy token-id forward under the already-applied forced seed materializes them; the realized
+    total is then counted so the cap binds the model that would actually train. The forward is
+    best-effort (a model that cannot run the bare token-id contract is counted as-constructed);
+    a parameter that is still uninitialized afterwards surfaces as a clean instantiation error.
+    """
+    try:
+        _run_materialization_forward(model, torch, ctx)
+    except Exception:
+        pass
+    return int(sum(int(param.numel()) for param in model.parameters()))
+
+
+def _first_param_device(model: Any, torch: Any) -> Any:
+    for param in model.parameters():
+        try:
+            return param.device
+        except (ValueError, RuntimeError):
+            continue
+    return torch.device("cpu")
+
+
+def _run_materialization_forward(model: Any, torch: Any, ctx: PrismContext) -> None:
+    """Run a dummy token-id forward so lazy/dynamic params take their realized shape.
+
+    Parameter counts do not depend on the sequence length, so a bounded dummy sequence is enough;
+    ``eval()`` + ``no_grad`` keeps it side-effect free and the forced seed (already applied by the
+    caller) keeps any deferred initialization deterministic.
+    """
+    seq_len = min(max(int(getattr(ctx, "sequence_length", 16) or 16), 2), 1024)
+    device = _first_param_device(model, torch)
+    tokens = torch.zeros((1, seq_len), dtype=torch.long, device=device)
+    was_training = model.training
+    model.eval()
+    try:
+        with torch.no_grad():
+            model(tokens)
+    finally:
+        if was_training:
+            model.train()
 
 
 def _vmsize_bytes() -> int:

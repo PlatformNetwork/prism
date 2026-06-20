@@ -42,6 +42,10 @@ class ComputeBlock(SchemaModel):
     nproc_per_node: int = Field(ge=1)
     device: str = Field(min_length=1)
     max_gpu_count: int | None = Field(default=None, ge=1)
+    # Realized parameter count of the model the runner ACTUALLY trained/scored (the model handed to
+    # the challenge online-loss instrument), recorded so the cap can be shown to bind the scored
+    # model, not just ``build_model`` in isolation (architecture.md 4.1, 6; VAL-CHEAT-022).
+    model_params: int | None = Field(default=None, ge=0)
 
 
 class ExecutionMode(StrEnum):

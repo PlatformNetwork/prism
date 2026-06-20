@@ -34,6 +34,10 @@ TRAINED_STATE_ARTIFACT = "trained_state.pt"
 # exit into a precise terminal reason (kept in sync with the runner script).
 BUDGET_EXCEEDED_MARKER = "PRISM_RUNNER_BUDGET_EXCEEDED"
 ARTIFACTS_QUOTA_MARKER = "PRISM_RUNNER_ARTIFACTS_QUOTA"
+# Marker the in-container runner prints when the model the miner ACTUALLY trains/scores (handed to
+# the challenge instrument) exceeds the parameter cap, even though build_model declared a sub-cap
+# model (architecture.md sections 4.1, 6; VAL-CHEAT-022). The host classifies it as prism:param-cap.
+PARAM_CAP_MARKER = "PRISM_RUNNER_PARAM_CAP"
 # Substrings that indicate a host-RAM / GPU-VRAM / OOM exhaustion of the eval container.
 _OOM_MARKERS = (
     "out of memory",
@@ -573,6 +577,21 @@ def _manifest_train_bpb(manifest: dict[str, Any]) -> float | None:
     return None
 
 
+def _manifest_model_params(manifest: dict[str, Any]) -> int | None:
+    """The realized parameter count of the SCORED model recorded by the runner, if present.
+
+    Surfaced into the typed ``compute`` block so the cap can be shown to bind the model actually
+    trained/scored, not just ``build_model`` in isolation (VAL-CHEAT-022).
+    """
+    for key in ("metrics", "compute", "score"):
+        block = manifest.get(key)
+        if isinstance(block, dict):
+            value = block.get("model_params")
+            if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                return value
+    return None
+
+
 def _manifest_train_bpb_basis(manifest: dict[str, Any]) -> str | None:
     """The tokenizer basis the prequential TRAIN bpb was measured on (``bytes`` / ``tokenizer``)."""
     for key in ("metrics", "score"):
@@ -630,6 +649,7 @@ def _ensure_compute_block(
         nproc_per_node=nproc_per_node,
         device=device,
         max_gpu_count=max_gpu_count,
+        model_params=_manifest_model_params(manifest),
     )
     try:
         (artifact_output / RUN_MANIFEST_V2_FILENAME).write_text(
@@ -722,6 +742,12 @@ def _classify_failure(detail: str, returncode: int) -> tuple[str, str]:
     with an accurate reason (architecture.md sections 4.3, 9).
     """
     haystack = detail.lower()
+    if PARAM_CAP_MARKER.lower() in haystack:
+        return (
+            "prism:param-cap",
+            "the model the training loop actually trained exceeds the parameter cap "
+            "(training.py diverged from the sub-cap build_model)",
+        )
     if BUDGET_EXCEEDED_MARKER.lower() in haystack:
         return (
             "prism:budget-exceeded",
@@ -791,6 +817,11 @@ DEFAULT_BATCH_SIZE = 8
 # Watchdog stderr markers the HOST classifies a non-zero exit by (kept in sync with container.py).
 BUDGET_EXCEEDED_MARKER = "PRISM_RUNNER_BUDGET_EXCEEDED"
 ARTIFACTS_QUOTA_MARKER = "PRISM_RUNNER_ARTIFACTS_QUOTA"
+# The cap binds the model the miner ACTUALLY trains/scores: if training.py hands the challenge
+# instrument a model whose realized parameter count exceeds ctx.max_parameters (even though
+# build_model declared a sub-cap model), the run is failed here BEFORE any online loss is captured
+# so the over-cap model is never trained-and-ranked (architecture.md 4.1, 6; VAL-CHEAT-022).
+PARAM_CAP_MARKER = "PRISM_RUNNER_PARAM_CAP"
 WATCHDOG_POLL_SECONDS = 0.5
 # Distinct non-zero exit codes for the two watchdog terminations (host reads the marker too).
 BUDGET_EXIT_CODE = 7
@@ -912,6 +943,30 @@ class _PrismBatch:
     metadata: object = None
 
 
+def _scored_model_param_count(model):
+    # Realized parameter count of the model the miner trains/scores. Uninitialized (lazy /
+    # not-yet-built) parameters are skipped here because torch raises on their numel(); they are
+    # counted on the re-check after the first forward materializes them, so a deferred over-cap
+    # model still cannot lower a genuinely over-cap total below the cap.
+    try:
+        from torch.nn.parameter import UninitializedParameter as _Uninit
+    except Exception:
+        _Uninit = ()
+    total = 0
+    try:
+        params = list(model.parameters())
+    except Exception:
+        return 0
+    for param in params:
+        if _Uninit and isinstance(param, _Uninit):
+            continue
+        try:
+            total += int(param.numel())
+        except (ValueError, RuntimeError):
+            continue
+    return total
+
+
 class _OnlineLossCapture:
     """Challenge-owned predict-then-train online-loss instrument (architecture.md 4.3, 5).
 
@@ -935,12 +990,17 @@ class _OnlineLossCapture:
         tokenizer,
         device,
         budget_seconds=None,
+        max_parameters=None,
     ):
         self.shards = list(shards)
         self.vocab_size = max(int(vocab_size), 2)
         self.seq_len = max(int(seq_len or 0), 2)
         self.batch_size = max(int(batch_size or 1), 1)
         self.baseline_nats = baseline_nats
+        # The cap the SCORED model must respect; the model handed to this instrument is the model
+        # that actually trains and is ranked, so the cap is enforced here (VAL-CHEAT-022).
+        self.max_parameters = max_parameters
+        self._param_cap_rechecked = False
         self.token_budget = token_budget
         self.step_budget = step_budget
         # Graceful wall-clock budget: the loop stops here and the run is scored on the PARTIAL
@@ -1049,6 +1109,12 @@ class _OnlineLossCapture:
         tokens = torch.tensor(ids, dtype=torch.long).remainder(self.vocab_size).view(rows, cols)
         tokens = tokens.to(model_device)
         loss_value = self._predict_loss(model, tokens)
+        if not self._param_cap_rechecked:
+            # The first forward realizes any lazy / first-forward / config-driven params, so the
+            # cap is re-checked here BEFORE this batch's loss is recorded: a model that defers its
+            # over-cap weights until forward is failed without ever contributing a ranking bpb.
+            self._param_cap_rechecked = True
+            self._check_param_cap(model)
         if not math.isfinite(loss_value):
             self.nan_inf_batches += 1
             loss_value = self.worst_case_nats
@@ -1080,11 +1146,34 @@ class _OnlineLossCapture:
             return "wall_clock"
         return None
 
+    def _check_param_cap(self, model):
+        # The model handed to this instrument is the one that ACTUALLY trains and is ranked, so the
+        # cap binds it (not just build_model in isolation). Record the realized parameter count for
+        # the manifest and fail the run when it exceeds the cap so the over-cap model never
+        # produces a ranking bpb (architecture.md 4.1, 6; VAL-CHEAT-022). Called both before the
+        # first batch (catches a concrete over-cap model) and once right after the first forward
+        # (catches lazy / first-forward construction once its params are realized).
+        params = _scored_model_param_count(model)
+        interface._SCORED_MODEL_PARAMS = params
+        cap = self.max_parameters
+        if cap is not None and cap > 0 and params > cap:
+            sys.stderr.write(
+                PARAM_CAP_MARKER + ": scored model has " + str(params)
+                + " parameters, exceeding the " + str(cap) + " parameter cap "
+                + "(training.py trained a model that diverges from the sub-cap build_model)\n"
+            )
+            sys.stderr.flush()
+            _fail(
+                "scored model has " + str(params) + " parameters, exceeding the "
+                + str(cap) + " parameter cap"
+            )
+
     def iterate(self, model):
         if self.started:
             return
         self.started = True
         self.model = model
+        self._check_param_cap(model)
         self.start_time = time.monotonic()
         needed = self.seq_len * self.batch_size
         buffer = []
@@ -1168,6 +1257,7 @@ class PrismContext:
                 tokenizer=tokenizer,
                 device=self.device,
                 budget_seconds=self.budget_seconds,
+                max_parameters=self.max_parameters,
             )
             interface._ONLINE_CAPTURE = capture
         return capture.iterate(model)
@@ -1193,6 +1283,9 @@ interface.TrainingRecipe = TrainingRecipe
 interface._MINER_BUILD_MODEL = None
 interface._TRAIN_SHARDS = train_shards
 interface._ONLINE_CAPTURE = None
+# Realized parameter count of the model the miner actually trains/scores; recorded into the v2
+# manifest so the cap can be shown to bind the scored model, not just build_model (VAL-CHEAT-022).
+interface._SCORED_MODEL_PARAMS = None
 
 # Make the shadow ``prism_challenge.evaluator`` a real PACKAGE pointing at the installed
 # evaluator source so the miner's two scripts still see the FORCED interface
@@ -1461,6 +1554,10 @@ train_bpb_basis = (
 # mounted here); the runner only persists the trained weights so the scorer can run the twin and
 # the trained model on val. ``trained_state_file`` is filled in below once the save succeeds.
 trained_state_file = None
+# Realized parameter count of the model the miner actually trained/scored (the model handed to the
+# challenge instrument), captured during the param-cap check so the cap can be shown to bind the
+# scored model, not just build_model in isolation (VAL-CHEAT-022).
+scored_model_params = getattr(interface, "_SCORED_MODEL_PARAMS", None)
 
 
 def _write_challenge_manifest():
@@ -1522,6 +1619,7 @@ def _write_challenge_manifest():
             "total_bytes_covered": covered_bytes,
             "nan_inf_batches": nan_inf_batches,
             "train_bpb_basis": train_bpb_basis,
+            "model_params": scored_model_params,
         },
         "score": {
             "schema": "prism_score.v2",

@@ -160,13 +160,16 @@ def build_compute_block(
     nproc_per_node: int,
     device: str,
     max_gpu_count: int | None = None,
+    model_params: int | None = None,
 ) -> dict[str, Any]:
     """Build the typed, observability-only ``compute`` block for the v2 manifest.
 
     ``gpu_count`` records the GPUs actually LEASED for the scored run (``== 1`` for the scored
     ``nproc=1`` path). The block is RECORDED for observability and VAL-GPU-005; it is NEVER read by
     ``score_prequential_bpb`` (``final_score`` derives only from compute-normalized learning
-    metrics, so there is no GPU-count reward and no scaling bonus). Validated through the typed
+    metrics, so there is no GPU-count reward and no scaling bonus). ``model_params`` records the
+    realized parameter count of the model the runner actually trained/scored so the cap can be
+    shown to bind the scored model (VAL-CHEAT-022). Validated through the typed
     :class:`~prism_challenge.evaluator.schemas.ComputeBlock` so the launch shape is well-formed.
     """
     block = ComputeBlock(
@@ -175,6 +178,7 @@ def build_compute_block(
         nproc_per_node=nproc_per_node,
         device=device,
         max_gpu_count=max_gpu_count,
+        model_params=model_params,
     )
     return block.model_dump(by_alias=True, exclude_none=True)
 
