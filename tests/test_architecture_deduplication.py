@@ -124,6 +124,9 @@ def _settings(tmp_path, **overrides) -> PrismSettings:
         "docker_backend": "broker",
         "docker_broker_url": "http://platform-docker-broker:8082",
         "docker_broker_token": "secret",
+        # Single-process training double; the multi-GPU static contract (default reject) is
+        # exercised explicitly in test_prism_distributed_contract.py.
+        "distributed_contract_policy": "off",
     }
     values.update(overrides)
     return PrismSettings(**values)

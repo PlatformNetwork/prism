@@ -106,6 +106,9 @@ def test_component_rewards_split_architecture_and_training(tmp_path, monkeypatch
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'components.sqlite3'}",
         shared_token="secret",
         allow_insecure_signatures=True,
+        # Single-process training double; the multi-GPU static contract (default reject) is
+        # exercised explicitly in test_prism_distributed_contract.py.
+        distributed_contract_policy="off",
         docker_enabled=True,
         docker_backend="broker",
         docker_broker_url="http://platform-docker-broker:8082",
@@ -192,6 +195,9 @@ def test_low_confidence_component_review_is_held_and_resolved(tmp_path, monkeypa
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'holds.sqlite3'}",
         shared_token="secret",
         allow_insecure_signatures=True,
+        # Single-process training double; the multi-GPU static contract (default reject) is
+        # exercised explicitly in test_prism_distributed_contract.py.
+        distributed_contract_policy="off",
         docker_enabled=True,
         docker_backend="broker",
         docker_broker_url="http://platform-docker-broker:8082",

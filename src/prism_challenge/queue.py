@@ -27,7 +27,11 @@ from .evaluator.components import (
     project_components,
 )
 from .evaluator.container import InfrastructureEvaluationError, PrismContainerEvaluator
-from .evaluator.interface import PrismContext
+from .evaluator.distributed_contract import (
+    check_distributed_contract,
+    enforce_single_node_bound,
+)
+from .evaluator.interface import DEFAULT_TRAINING_ENTRYPOINT, PrismContext
 from .evaluator.lium_client import LiumJob
 from .evaluator.modes import execution_mode_from_value
 from .evaluator.review_rules import ReviewRule, load_review_rules
@@ -64,6 +68,15 @@ def _is_v2_run_manifest(manifest: Any) -> bool:
         and manifest.get("schema_version") == "prism_run_manifest.v2"
         and isinstance(manifest.get("metrics"), dict)
     )
+
+
+def _metadata_value(metadata: dict[str, Any], *keys: str) -> Any:
+    """Return the first present, non-None submission metadata value among ``keys``."""
+    for key in keys:
+        value = metadata.get(key)
+        if value is not None:
+            return value
+    return None
 
 
 @dataclass(frozen=True)
@@ -323,6 +336,7 @@ class PrismWorker:
             code = review.code
             report = self._inspect_project_snapshot(snapshot, code)
             await self._static_model_instantiation_check(snapshot, component_review)
+            self._distributed_contract_check(snapshot, component_review, metadata)
         except (SandboxViolation, SyntaxError) as exc:
             await self._reject_submission(submission_id, str(exc))
             return submission_id
@@ -506,6 +520,37 @@ class PrismWorker:
             build_model_symbol=components.build_model_symbol,
             timeout_seconds=self.settings.static_instantiation_timeout_seconds,
             memory_headroom_bytes=self.settings.static_instantiation_memory_headroom_bytes,
+        )
+
+    def _distributed_contract_check(
+        self,
+        snapshot: source_similarity.SourceSnapshot,
+        component_review: ComponentReview,
+        metadata: dict[str, Any],
+    ) -> None:
+        """Multi-GPU static contract (architecture.md section 8), before any GPU work.
+
+        Statically verifies the training script uses the distributed primitives + a rank-0 write
+        guard (per ``distributed_contract_policy``) and enforces the single-node bound (reject a
+        ``gpu_count > 8`` / multi-node request). Raises SandboxViolation on a violation, which the
+        caller converts into a clean ``rejected`` outcome with no GPU lease/job.
+        """
+        components = component_review.components
+        training_entry = components.training_entrypoint or DEFAULT_TRAINING_ENTRYPOINT
+        training_code = next(
+            (file.content for file in snapshot.python_files if file.path == training_entry),
+            "",
+        )
+        if training_code:
+            check_distributed_contract(
+                training_code,
+                artifact_path=training_entry,
+                policy=self.settings.distributed_contract_policy,
+            )
+        enforce_single_node_bound(
+            _metadata_value(metadata, "gpu_count", "num_gpus", "requested_gpu_count", "gpus"),
+            num_nodes=_metadata_value(metadata, "num_nodes", "nnodes", "nodes"),
+            max_gpu_count=self.settings.platform_eval_max_gpu_count,
         )
 
     def _local_import_roots(self, snapshot: source_similarity.SourceSnapshot) -> set[str]:

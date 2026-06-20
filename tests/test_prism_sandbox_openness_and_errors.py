@@ -214,6 +214,9 @@ def _make_client(tmp_path: Path, **overrides: object) -> TestClient:
         shared_token="secret",
         allow_insecure_signatures=True,
         fineweb_sample_count=4,
+        # Single-process training doubles; the multi-GPU static contract (default reject) is
+        # exercised explicitly in test_prism_distributed_contract.py.
+        distributed_contract_policy="off",
         **overrides,
     )
     return TestClient(create_app(settings))

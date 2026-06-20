@@ -40,6 +40,9 @@ def _settings(tmp_path: Path, name: str) -> PrismSettings:
         docker_broker_url="http://platform-docker-broker:8082",
         docker_broker_token="secret",
         plagiarism_enabled=False,
+        # These doubles exercise runtime failure handling with single-process loops; the
+        # multi-GPU static contract is covered in test_prism_distributed_contract.py.
+        distributed_contract_policy="off",
     )
 
 

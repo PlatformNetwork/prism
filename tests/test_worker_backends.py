@@ -83,6 +83,9 @@ def test_platform_gpu_worker_runs_submission_in_container(tmp_path, monkeypatch)
         platform_eval_gpu_count=2,
         platform_eval_gpu_type="l4",
         plagiarism_enabled=False,
+        # Single-process training double; the multi-GPU static contract (default reject) is
+        # exercised explicitly in test_prism_distributed_contract.py.
+        distributed_contract_policy="off",
     )
     with TestClient(create_app(settings)) as client:
         submission_id = _submit(client, REMOTE_ONLY_CODE, nonce="platform-gpu")
@@ -254,6 +257,9 @@ def test_platform_gpu_accepts_custom_training_and_inference_hooks(tmp_path, monk
         docker_broker_token="secret",
         sequence_length=16,
         plagiarism_enabled=False,
+        # Single-process training double; the multi-GPU static contract (default reject) is
+        # exercised explicitly in test_prism_distributed_contract.py.
+        distributed_contract_policy="off",
     )
     with TestClient(create_app(settings)) as client:
         submission_id = _submit(client, CUSTOM_HOOK_CODE, nonce="custom-hooks")

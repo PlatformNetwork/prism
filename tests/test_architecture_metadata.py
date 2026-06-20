@@ -246,6 +246,9 @@ def test_accepted_architecture_emits_source_free_artifacts_and_derived_mermaid(
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'metadata.sqlite3'}",
         shared_token="secret",
         allow_insecure_signatures=True,
+        # Single-process training double; the multi-GPU static contract (default reject) is
+        # exercised explicitly in test_prism_distributed_contract.py.
+        distributed_contract_policy="off",
         docker_enabled=True,
         docker_backend="broker",
         docker_broker_url="http://platform-docker-broker:8082",

@@ -255,6 +255,9 @@ def test_container_path_scores_prequential_bpb_from_challenge_manifest(tmp_path,
         docker_broker_token="secret",
         platform_eval_artifact_root=tmp_path / "artifacts",
         plagiarism_enabled=False,
+        # Single-process training double; the multi-GPU static contract (default reject) is
+        # exercised explicitly in test_prism_distributed_contract.py.
+        distributed_contract_policy="off",
     )
     with TestClient(create_app(settings)) as client:
         submission_id = _submit(client, "bpb-int")

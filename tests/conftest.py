@@ -90,6 +90,10 @@ def client(tmp_path: Path) -> TestClient:
         shared_token="secret",
         allow_insecure_signatures=True,
         fineweb_sample_count=4,
+        # Most pipeline tests use minimal single-process training doubles; the multi-GPU static
+        # contract (production default: reject) is an isolation knob here and is exercised
+        # explicitly in test_prism_distributed_contract.py.
+        distributed_contract_policy="off",
     )
     with TestClient(create_app(settings)) as test_client:
         yield test_client

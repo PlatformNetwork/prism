@@ -119,6 +119,9 @@ def test_immutable_owner_survives_duplicate_and_better_architecture_submissions(
         docker_broker_token="secret",
         plagiarism_enabled=False,
         architecture_transfer_min_delta_abs=0.08,
+        # Single-process training double; the multi-GPU static contract (default reject) is
+        # exercised explicitly in test_prism_distributed_contract.py.
+        distributed_contract_policy="off",
     )
 
     with TestClient(create_app(settings)) as client:

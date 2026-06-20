@@ -54,6 +54,9 @@ def _settings(db_path: Path, *, plagiarism_enabled: bool) -> PrismSettings:
         docker_broker_token="secret",
         component_agent_enabled=False,
         plagiarism_enabled=plagiarism_enabled,
+        # Single-process training double; the multi-GPU static contract (default reject) is
+        # exercised explicitly in test_prism_distributed_contract.py.
+        distributed_contract_policy="off",
         training_improvement_min_delta_abs=0.02,
         training_improvement_z_score=1.0,
     )

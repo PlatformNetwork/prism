@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import SettingsConfigDict
@@ -190,6 +191,16 @@ class PrismSettings(ChallengeSettings):
     platform_eval_read_only: bool = True
     platform_eval_max_gpu_count: int = Field(default=8, ge=1, le=8)
     platform_eval_gpu_count: int = 1
+    # Multi-GPU static contract policy (architecture.md section 8). Gate A statically verifies the
+    # miner training.py uses the distributed primitives + a rank-0 write guard and rejects a
+    # gpu_count > 8 / multi-node request before any GPU work. ``reject`` (default) hard-rejects a
+    # non-distributed script; ``flag`` advances but logs; ``off`` skips the check.
+    distributed_contract_policy: Literal["reject", "flag", "off"] = Field(
+        default="reject",
+        validation_alias=AliasChoices(
+            "PRISM_DISTRIBUTED_CONTRACT_POLICY", "CHALLENGE_DISTRIBUTED_CONTRACT_POLICY"
+        ),
+    )
     platform_eval_gpu_type: str | None = None
     platform_gpu_targets: str | None = None
     platform_eval_gpu_server: str | None = None
