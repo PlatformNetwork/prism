@@ -24,6 +24,58 @@ REJECTION_PATTERNS = [
     ),
 ]
 
+SAFETY_REVIEW_SYSTEM = (
+    "You are a strict security and integrity reviewer and a HARD GATE for a Platform "
+    "Network 'ability-to-learn' ML subnet. Each submission is TWO scripts -- architecture.py "
+    "(the model factory) and training.py (the miner's from-scratch learning loop) -- "
+    "concatenated below with `# file:` headers; you MUST review BOTH scripts together. "
+    "You must call SubmitMermaid first, then SubmitVerdict exactly once. verdict=true ALLOWS "
+    "the submission to proceed to GPU evaluation; verdict=false REJECTS it. A reject is "
+    "TERMINAL and stops the pipeline before any GPU work -- it does NOT require a line number "
+    "or a 64-char evidence hash, so reject on a clear, human-readable reason whenever the "
+    "bundle is unsafe, incoherent, or cheating. When in doubt about safety, reject."
+)
+
+SAFETY_REVIEW_INSTRUCTIONS = (
+    "Review BOTH scripts together and REJECT (verdict=false) if ANY of the following holds:\n"
+    "1. Architecture<->training INCOHERENCE: training.py is not a sensible, real learning "
+    "procedure for the architecture.py model (trains a different model than the one declared, "
+    "optimizer never steps the model's parameters, loss computed on unrelated tensors, or an "
+    "architecture/recipe mismatch).\n"
+    "2. Hidden no-op / dead / fake training loop: empty loop body, gradients detached, "
+    "optimizer.step() never reached, immediate return, or sleeping to burn the budget without "
+    "actually learning.\n"
+    "3. Obfuscated code: base64/hex-encoded blobs decoded at runtime, single-letter "
+    "indirection to hide intent, or string-built attribute access designed to evade the static "
+    "AST sandbox.\n"
+    "4. Smuggled / pretrained weights: embedding a weight blob and loading it, "
+    "torch.load/from_pretrained of an external/untrusted path, or reconstructing weights from "
+    "constants (the validator forces random init, so any pretrained load is a cheat).\n"
+    "5. Hidden network / exfiltration: sockets, requests/urllib/httpx, or reading secrets "
+    "(/etc/passwd, .ssh, API keys).\n"
+    "6. Security-risky dangerous ops the static sandbox might miss: os.system, subprocess, "
+    "eval/exec/compile, ctypes, dynamic importlib, or filesystem writes outside artifacts_dir.\n"
+    "7. Metric gaming: writing its own prism_run_manifest, monkeypatching the loss-capture "
+    "hook, reporting fabricated low loss, or hardcoding outputs to fake a low bits-per-byte.\n"
+    "8. RESIDUAL INDIRECTION the static sandbox CANNOT statically resolve -- treat as "
+    "obfuscation and REJECT: any variable-driven / non-constant-foldable getattr or setattr "
+    "that targets a blocked symbol, e.g. `n = 'load'; getattr(torch, n)(...)`, "
+    "`getattr(torch, some_var)`, `setattr(ctx, name, ...)`, or operator.attrgetter built from a "
+    "runtime value. A literal, constant-foldable getattr/setattr is fine; a name assembled or "
+    "chosen at runtime to reach a forbidden op is NOT.\n"
+)
+
+
+def build_safety_review_prompt(*, subject: str, rules_text: str, code: str) -> str:
+    return (
+        f"Review this {subject} (two scripts: architecture.py + training.py) as a hard gate.\n\n"
+        f"Dynamic subnet rules:\n{rules_text}\n\n"
+        f"{SAFETY_REVIEW_INSTRUCTIONS}\n"
+        "If the bundle is a benign, coherent learner with none of the above, ALLOW it "
+        "(verdict=true).\n\n"
+        f"Source (both scripts):\n```python\n{code[:80_000]}\n```"
+    )
+
 
 class SubmitMermaid(BaseModel):
     mermaid: str = Field(min_length=1, description="Readable Mermaid diagram of reviewed logic.")
@@ -137,19 +189,11 @@ def review_code(
     try:
         review = _invoke_review_flow(
             config,
-            system=(
-                "You are a strict security reviewer for a Platform Network subnet. "
-                "You must call SubmitMermaid first, then SubmitVerdict exactly once. "
-                "For this safety review, verdict=true approves the code and verdict=false "
-                "flags it. A false verdict must include deterministic evidence; suspicion "
-                "without evidence is quarantined instead of rejected."
-            ),
-            prompt=(
-                f"Review this {subject} for rule compliance.\n\n"
-                f"Dynamic subnet rules:\n{rules_prompt(rules)}\n\n"
-                "Reject code that exfiltrates secrets, opens process/network escapes, "
-                "hides payloads, or violates the dynamic subnet rules.\n\n"
-                f"Source:\n```python\n{code[:80_000]}\n```"
+            system=SAFETY_REVIEW_SYSTEM,
+            prompt=build_safety_review_prompt(
+                subject=subject,
+                rules_text=rules_prompt(rules),
+                code=code,
             ),
         )
     except Exception as exc:
@@ -157,19 +201,18 @@ def review_code(
     verdict = review["verdict"]
     approved = bool(verdict["verdict"])
     evidence = _as_evidence_payload(verdict.get("evidence"))
-    held = not approved and not evidence
+    # Hard gate: a model verdict is authoritative. A reject is TERMINAL and never downgraded
+    # to a hold for lacking a 64-char evidence hash (the inverted evidence-gating).
     return LlmReview(
         approved=approved,
-        reason=str(verdict["reason"])
-        if not held
-        else f"LLM suspicion without evidence: {verdict['reason']}",
+        reason=str(verdict["reason"]),
         violations=_as_list(verdict.get("violations")) + _as_list(verdict.get("rule_ids")),
         scores=[1, 1] if approved else [0, 0],
         confidence=float(verdict.get("confidence") or 0.0),
         raw=review,
         mermaid=str(review["mermaid"].get("mermaid") or ""),
         evidence=evidence,
-        held=held,
+        held=False,
     )
 
 

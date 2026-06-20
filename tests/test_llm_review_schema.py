@@ -101,7 +101,9 @@ def test_deterministic_evidence_still_rejects(monkeypatch):
     assert len(review.evidence) == 1
 
 
-def test_suspicion_without_deterministic_evidence_quarantines(monkeypatch):
+def test_reject_without_deterministic_evidence_is_terminal(monkeypatch):
+    # Inverted evidence-gating (hard gate): a model `reject` is TERMINAL even when it cannot
+    # cite a precise locator / 64-char snippet hash -- it is never downgraded to a hold.
     verdict = {
         "reason": "suspects hidden behavior but cannot cite a precise location",
         "verdict": False,
@@ -124,7 +126,8 @@ def test_suspicion_without_deterministic_evidence_quarantines(monkeypatch):
     )
 
     assert review.approved is False
-    assert review.held is True
+    assert review.held is False
+    assert review.reason == "suspects hidden behavior but cannot cite a precise location"
 
 
 @pytest.mark.parametrize("bad", [[{"rule_id": "x", "artifact_path": "s", "explanation": "e"}]])

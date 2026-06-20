@@ -404,8 +404,9 @@ class PrismRepository:
         idempotency_key: str | None = None,
     ) -> None:
         evidence_payload = _validate_evidence(evidence or [])
-        if not approved and not evidence_payload:
-            held = True
+        # Hard gate: honor the caller's verdict. A safety reject is TERMINAL (rejected) and is
+        # NOT downgraded to a hold for lacking deterministic evidence; only an explicit held=True
+        # (e.g. a fail-closed LLM error / plagiarism band) quarantines.
         final_state = "quarantined" if held else "accepted" if approved else "rejected"
         async with self.database.connect() as conn:
             mermaid_rows = await conn.execute_fetchall(
