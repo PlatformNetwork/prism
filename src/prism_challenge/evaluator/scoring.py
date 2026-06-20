@@ -5,6 +5,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from .schemas import ComputeBlock
+
 # --- Prequential bits-per-byte primary scoring (architecture.md section 5) -------------------
 # The authoritative score is the prequential / online compression metric in bits-per-byte: the
 # AREA UNDER the from-scratch online loss curve (integrated over the whole single-pass run),
@@ -137,6 +139,32 @@ class PrequentialBpbScore:
 def bpb_to_final_score(bpb: float) -> float:
     """Monotone-decreasing transform of bits-per-byte: lower bpb -> higher (better) final_score."""
     return 1.0 / (1.0 + max(0.0, float(bpb)))
+
+
+def build_compute_block(
+    *,
+    gpu_count: int,
+    world_size: int,
+    nproc_per_node: int,
+    device: str,
+    max_gpu_count: int | None = None,
+) -> dict[str, Any]:
+    """Build the typed, observability-only ``compute`` block for the v2 manifest.
+
+    ``gpu_count`` records the GPUs actually LEASED for the scored run (``== 1`` for the scored
+    ``nproc=1`` path). The block is RECORDED for observability and VAL-GPU-005; it is NEVER read by
+    ``score_prequential_bpb`` (``final_score`` derives only from compute-normalized learning
+    metrics, so there is no GPU-count reward and no scaling bonus). Validated through the typed
+    :class:`~prism_challenge.evaluator.schemas.ComputeBlock` so the launch shape is well-formed.
+    """
+    block = ComputeBlock(
+        gpu_count=gpu_count,
+        world_size=world_size,
+        nproc_per_node=nproc_per_node,
+        device=device,
+        max_gpu_count=max_gpu_count,
+    )
+    return block.model_dump(by_alias=True, exclude_none=True)
 
 
 # --- Deterministic leaderboard ordering + final tie-break (architecture.md section 5) ------------

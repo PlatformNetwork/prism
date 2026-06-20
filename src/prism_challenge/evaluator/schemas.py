@@ -12,10 +12,36 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # in by the scoring recast; the runner records the forced-init re-execution provenance.
 RUN_MANIFEST_V2_FILENAME = "prism_run_manifest.v2.json"
 RUN_MANIFEST_V2_SCHEMA_VERSION = "prism_run_manifest.v2"
+# Typed, observability-only `compute` block recorded on the v2 run manifest.
+COMPUTE_BLOCK_SCHEMA = "prism_compute.v1"
 
 
 class SchemaModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class ComputeBlock(SchemaModel):
+    """Typed, observability-only compute record for the v2 run manifest.
+
+    Records the GPUs actually LEASED for the scored re-execution (``gpu_count``; ``== 1`` for the
+    scored single-GPU ``nproc=1`` path) plus the launch shape already known to the harness
+    (``world_size`` / ``nproc_per_node`` / ``device``). It is a RECORDED field for observability and
+    so VAL-GPU-005 can be asserted by field: the prequential bits-per-byte ``final_score`` derives
+    SOLELY from compute-normalized learning metrics and never reads ``gpu_count`` (there is no
+    GPU-count reward and no multi-GPU scaling bonus). For the single-node scored run
+    ``gpu_count == world_size == nproc_per_node`` and equals the DB ``eval_jobs.actual_gpu_count``.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    # Aliased to the JSON key "schema" (matching the score block convention) without shadowing the
+    # deprecated ``BaseModel.schema`` attribute.
+    compute_schema: str = Field(default=COMPUTE_BLOCK_SCHEMA, min_length=1, alias="schema")
+    gpu_count: int = Field(ge=0)
+    world_size: int = Field(ge=1)
+    nproc_per_node: int = Field(ge=1)
+    device: str = Field(min_length=1)
+    max_gpu_count: int | None = Field(default=None, ge=1)
 
 
 class ExecutionMode(StrEnum):

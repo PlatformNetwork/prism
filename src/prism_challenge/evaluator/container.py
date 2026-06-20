@@ -21,7 +21,7 @@ from .heldout import HeldoutResult, compute_heldout_metrics
 from .interface import PrismContext
 from .modes import execution_mode_from_value
 from .schemas import RUN_MANIFEST_V2_FILENAME, DeterministicEvidence, ExecutionMode
-from .scoring import ScoreValidationError, score_prequential_bpb
+from .scoring import ScoreValidationError, build_compute_block, score_prequential_bpb
 from .source_similarity import SourceFile
 
 DEFAULT_MASTER_ADDR = "127.0.0.1"
@@ -220,6 +220,7 @@ class PrismContainerEvaluator:
                 )
             manifest = _read_run_manifest(artifact_output / RUN_MANIFEST_V2_FILENAME)
             if manifest is not None:
+                _ensure_compute_block(manifest, gpu_allocation, artifact_output)
                 manifest = self._augment_with_heldout(
                     manifest,
                     files=payload_files,
@@ -594,6 +595,48 @@ def _resolve_recorded_trained_state(artifact_output: Path, recorded: Any) -> Pat
     if candidate.parent != base:
         return None
     return candidate if candidate.is_file() else None
+
+
+def _ensure_compute_block(
+    manifest: dict[str, Any], gpu_allocation: Mapping[str, Any], artifact_output: Path
+) -> None:
+    """Author the authoritative observability-only ``compute`` block on the v2 manifest.
+
+    The GPUs actually LEASED for the run (``gpu_allocation['actual_gpu_count']`` == the DB
+    ``eval_jobs.actual_gpu_count``) are the source of truth for ``compute.gpu_count`` (``== 1`` for
+    the scored ``nproc=1`` path), so the block is internally consistent with ``run.world_size`` /
+    ``run.nproc_per_node`` and the DB for the same eval. The block is RECORDED for observability
+    (VAL-GPU-005) and is never an input to ``final_score``. The reconciled manifest is persisted to
+    the on-disk artifact where manifest-inspect reads it (best-effort; never fails the run).
+    """
+    run = manifest.get("run")
+    run = run if isinstance(run, Mapping) else {}
+    gpu_count = _coerce_int(gpu_allocation.get("actual_gpu_count"), default=1, minimum=0)
+    world_size = _coerce_int(run.get("world_size"), default=max(gpu_count, 1), minimum=1)
+    nproc_per_node = _coerce_int(run.get("nproc_per_node"), default=world_size, minimum=1)
+    device = run.get("device") if isinstance(run.get("device"), str) and run.get("device") else None
+    if device is None:
+        device = "cuda" if gpu_count > 0 else "cpu"
+    max_gpu_count = _coerce_int(gpu_allocation.get("max_gpu_count"), default=0, minimum=0) or None
+    manifest["compute"] = build_compute_block(
+        gpu_count=gpu_count,
+        world_size=world_size,
+        nproc_per_node=nproc_per_node,
+        device=device,
+        max_gpu_count=max_gpu_count,
+    )
+    try:
+        (artifact_output / RUN_MANIFEST_V2_FILENAME).write_text(
+            json.dumps(manifest, sort_keys=True, indent=2), encoding="utf-8"
+        )
+    except OSError:
+        pass
+
+
+def _coerce_int(value: Any, *, default: int, minimum: int) -> int:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return max(minimum, value)
+    return max(minimum, default)
 
 
 def _merge_heldout_into_manifest(manifest: dict[str, Any], result: HeldoutResult) -> None:
@@ -1248,6 +1291,13 @@ def _write_watchdog_manifest(reason):
             "device": str(device),
             "stopped_reason": reason,
         },
+        "compute": {
+            "schema": "prism_compute.v1",
+            "gpu_count": world_size,
+            "world_size": world_size,
+            "nproc_per_node": world_size,
+            "device": str(device),
+        },
         "data": {
             "data_dir": str(data_dir),
             "source": "locked-fineweb-edu-train",
@@ -1404,6 +1454,16 @@ def _write_challenge_manifest():
             "master_addr": os.environ.get("MASTER_ADDR"),
             "nproc_per_node": world_size,
             "stopped_reason": stopped_reason,
+        },
+        "compute": {
+            # Observability-only GPUs leased for this run (== world_size == nproc_per_node for the
+            # single-node scored path; ==1 for the scored nproc=1 run). The host reconciles
+            # gpu_count to the DB actual_gpu_count. Never an input to final_score.
+            "schema": "prism_compute.v1",
+            "gpu_count": world_size,
+            "world_size": world_size,
+            "nproc_per_node": world_size,
+            "device": str(device),
         },
         "data": {
             "data_dir": str(data_dir),
