@@ -1,143 +1,99 @@
 # Scoring and Rewards
 
-PRISM rewards two kinds of contributions:
+PRISM scores a single thing: a model's ability to learn from scratch, measured as online compression.
+The primary metric is a **prequential bits-per-byte (bpb)** score that the challenge computes itself
+from a forced-init re-execution. A held-out delta-over-random-init breaks near-ties, and an
+anti-memorization gap penalizes overfitting. Lower bits-per-byte is better.
 
-1. Architecture discovery, meaning useful architecture families and canonical architecture versions.
-2. Training and recipe improvement, meaning better optimizer, loss, inference, and train-step behavior for a known architecture family.
+## Primary Metric: Prequential Bits-Per-Byte
 
-This split makes PRISM a decentralized NAS system rather than a single leaderboard for monolithic submissions.
+During the forced-init re-execution, the challenge feeds the model fresh, single-pass batches from the
+locked train split and records the model's loss on each new batch **before** the optimizer updates on
+it. Because the data is single-pass, this online (predict-then-train) loss is the prequential
+code-length by construction.
 
-## Default Reward Pools
-
-The default component reward pools are:
-
-| Pool | Default share |
-| --- | ---: |
-| Architecture ownership | 60% |
-| Training ownership | 40% |
-
-These are runtime policy defaults. SQL runtime config can override supported policy values. The active SQL row is read first, then env or Pydantic defaults, then schema defaults where a schema field has its own default.
-
-## Default Final Score Blend
-
-The default leaderboard compatibility score is:
+The challenge integrates that code-length over the whole run and normalizes it by the raw UTF-8 bytes
+of text covered:
 
 ```text
-S_prism = 70% * Q_arch + 30% * Q_recipe
+bpb = (sum over consumed tokens of -log2 p(token)) / total_bytes_covered
 ```
 
-The SQL `score_weights` runtime config can override `final_architecture_weight` and `final_recipe_weight` as long as they sum to 1.0. Official component formulas still require the implemented component names and default percentages below.
+Because the denominator is bytes, the metric is **tokenizer-agnostic**: a miner can bring any
+tokenizer and the score still compares like for like. Because it integrates the whole loss curve, a
+single good checkpoint cannot game it. Because each token is scored before being trained on, there is
+no held-out leakage by construction. And because the validator forces random init, smuggled
+pretrained weights are inert.
 
-## Architecture Official Formula
+`final_score` is a documented monotone-decreasing transform of bpb, so a **lower** bpb yields a
+**better** (higher) `final_score`, and the leaderboard's `ORDER BY final_score DESC` ranks better
+learners first:
 
-Architecture scoring is separate from miner-submitted training recipes. Official architecture evaluation uses manifest-backed reference-recipe architecture signals so a custom recipe cannot become the cross-architecture ranking signal.
+```text
+final_score = 1 / (1 + bpb)        # before tie-break, penalty, and anti-cheat multiplier
+```
 
-| Component | Default share | Manifest source |
-| --- | ---: | --- |
-| `learning_scaling_dynamics` | 35% | `loss.relative_loss_reduction` and `metrics.learning_speed_slope` |
-| `standardized_lm_quality` | 20% | `loss.standardized_eval_loss` |
-| `compute_efficiency` | 15% | `metrics.estimated_flops` |
-| `parameter_efficiency` | 10% | `metrics.parameter_count` |
-| `diagnostics_health` | 10% | `metrics.diagnostics` |
-| `robustness_stability` | 5% | `metrics.loss_vs_tokens` |
-| `benchmark_sanity` | 5% | `metrics.benchmark_scores` |
+## Compute Normalization, Not Wall-Clock
 
-Raw final loss is not a cross-architecture ranking signal. Architecture official scoring requires fixed-tokenizer or byte-normalized standardized loss metadata. A manifest that reports only architecture-baseline loss is not enough for official architecture ranking.
+The score is **compute-normalized**: it is reported and normalized by tokens consumed (and,
+optionally, estimated FLOPs), never by wall-clock time. A faster GPU or more GPUs cannot buy a better
+score; wall-clock is only a safety cap on the run. This keeps scores fair across the 1-to-8 GPU range
+even though the scored run uses one physical GPU.
 
-### Scientific basis
+## Tie-Breaker: Held-Out Delta Over Random Init
 
-This formula follows the main reproducibility lessons from NAS and scaling-law literature:
+When two submissions are near-equal on bpb, the challenge breaks the tie with the held-out delta on
+the secret `val` split:
 
-* **NAS-Bench-101** (Ying, Klein, Real, Christiansen, Murphy, Hutter, 2019) and **NAS-Bench-201** (Dong and Yang, 2020) show that NAS comparisons need fixed search spaces, canonical architecture identity, repeated evaluation, and controlled protocols. PRISM therefore separates architecture identity from source text and keeps architecture scoring separate from miner-specific training recipes.
-* **Scaling Laws for Neural Language Models** (Kaplan et al., 2020) and **Training Compute-Optimal Large Language Models / Chinchilla** (Hoffmann et al., 2022) show that language-model loss depends jointly on parameters, tokens, and compute. PRISM therefore gives the largest architecture share to learning and scaling dynamics instead of raw final loss.
-* **Deep Learning Scaling is Predictable, Empirically** (Hestness et al., 2017) supports fitting learning curves across budgets, while **Broken Neural Scaling Laws** (Caballero et al., 2023) warns that extrapolation can fail. PRISM logs loss-vs-token trajectories and keeps benchmark sanity capped rather than allowing a single extrapolation or benchmark to dominate.
-* **Green AI** (Schwartz, Dodge, Smith, and Etzioni, 2019) and **MLPerf Training Benchmark** (Mattson et al., 2020) motivate explicit compute-efficiency reporting. PRISM therefore scores compute efficiency and requires fixed official GPU profiles for comparable official runs.
+```text
+heldout_delta = bpb(random-init twin on val) - bpb(trained model on val)
+```
 
-## Training Official Formula
+A larger improvement over the random-init twin is better. The held-out delta is folded into
+`final_score` as a **bounded** tie-break term: it can only reorder submissions whose bpb is within a
+small epsilon of each other, so a strictly lower bpb is never ranked worse on the primary axis. When
+no secret val split is scored for a run, the run is graded on bpb alone with no tie-break.
 
-Training scoring ranks improvements within a target architecture family.
+## Anti-Memorization Gap
 
-| Component | Default share | Manifest source |
-| --- | ---: | --- |
-| `architecture_normalized_heldout_improvement` | 30% | `loss.architecture_normalized_heldout_improvement` |
-| `learning_stability_dynamics` | 25% | `metrics.loss_vs_tokens` and `metrics.learning_speed_slope` |
-| `benchmark_sanity` | 15% | `metrics.benchmark_scores` |
-| `compute_efficiency` | 10% | `metrics.estimated_flops` |
-| `reproducibility_stability` | 10% | `metrics.benchmark_noise_metadata` |
-| `robustness_failure_behavior` | 5% | `validation` and `metrics.diagnostics` |
-| `artifact_completeness` | 5% | `artifacts` |
+The challenge also measures the train-vs-held-out gap (the converged train bpb against the held-out
+val bpb on the same byte basis). An excessive gap flags memorization and multiplies a penalty into
+`final_score`, so a memorizer ranks below an equivalent non-memorizing learner. The gap comparison is
+basis-consistent so a benign learner is not falsely flagged, while the final bpb denominator stays
+UTF-8 bytes.
 
-Raw final loss is metadata only for training scoring. The primary loss signal is architecture-normalized heldout improvement.
+## Anomaly Zeroing
 
-Training scoring follows the hyperparameter-optimization and NAS reproducibility findings of **Random Search and Reproducibility for Neural Architecture Search** (Li and Talwalkar, 2019): optimizer and recipe improvements must be evaluated within a controlled architecture context so recipe quality is not mistaken for architecture ownership. Gradient and batch behavior are informed by **An Empirical Model of Large-Batch Training** (McCandlish et al., 2018), which motivates tracking learning stability, batch efficiency, and gradient-noise behavior rather than only final checkpoint loss.
+A step-0 / smuggled-weights anomaly (an impossibly low initial loss under forced random init) drives
+the anti-cheat multiplier to zero, so an anomalously good bpb is flagged and zeroed rather than
+rewarded. A degenerate run (zero coverage, non-finite, or out-of-band bpb) is failed rather than
+scored, so it never collapses into a fabricated score that ranks.
 
-## Benchmark Sanity
+## Leaderboard And Tie-Break Ordering
 
-Benchmark sanity is a secondary score input. The implemented benchmark weights are:
+The leaderboard ranks by `final_score` (so by bpb and the folded-in held-out delta). When two
+submissions are still equal, the final deterministic tie-break is **earliest-commit-wins**, then
+submission id, producing a total, reproducible order. Each hotkey appears at most once: the best
+submission per hotkey survives, so a worse same-hotkey submission never supersedes a better one.
 
-| Benchmark key | Default share inside benchmark sanity |
-| --- | ---: |
-| `mmlu` | 20% |
-| `gsm8k` | 15% |
-| `math` | 15% |
-| `humaneval` | 15% |
-| `arc_challenge` | 10% |
-| `needle` | 10% |
-| `ifeval` | 10% |
-| `truthfulqa` | 5% |
+## Weights
 
-Benchmark sanity is capped by the formula share. The implemented runtime validation rejects formula configs where `benchmark_sanity` exceeds 15% or becomes the primary architecture or training signal. Defaults keep the cap at 5% for architecture and 15% for training.
+`get_weights` converts completed scores into normalized Platform weights: one weight per hotkey, taken
+from that hotkey's best `final_score`, normalized to sum to 1.0. Weights are always **dry-run** and
+are never written on-chain.
 
-The benchmark set maps to public evaluation studies: **GSM8K** (Cobbe et al., 2021), **MATH** (Hendrycks et al., 2021), **ARC** (Clark et al., 2018), **HumanEval** (Chen et al., 2021), **MMLU** (Hendrycks et al., 2020), **IFEval** (Zhou et al., 2023), **TruthfulQA** (Lin, Hilton, and Evans, 2021), and long-context probes inspired by **Lost in the Middle** (Liu et al., 2023) and **RULER** (Hsieh et al., 2024). These benchmarks are useful for downstream sanity checks, but they are capped because public benchmarks can be prompt-sensitive, scale-sensitive, and contaminated.
+## The Challenge Is The Source Of Truth
+
+Every number above is recomputed by the challenge from the challenge-authored
+`prism_run_manifest.v2.json`. Miner-reported metrics and miner-written manifests are ignored. The
+legacy raw-loss term and the v1-NAS architecture/training ownership pools are retired from the score.
 
 ## Reference Studies
 
 | Area | Study | PRISM implication |
 | --- | --- | --- |
-| NAS reproducibility | Ying et al., 2019, *NAS-Bench-101* | Use canonical architecture identity and controlled evaluation. |
-| NAS reproducibility | Dong and Yang, 2020, *NAS-Bench-201* | Keep architecture and recipe effects separated. |
-| NAS baselines | Li and Talwalkar, 2019, *Random Search and Reproducibility for Neural Architecture Search* | Require strong baselines and avoid over-crediting search noise. |
-| Scaling laws | Kaplan et al., 2020, *Scaling Laws for Neural Language Models* | Score loss trajectories across parameters, tokens, and compute. |
-| Compute optimality | Hoffmann et al., 2022, *Training Compute-Optimal Large Language Models* | Avoid ranking by raw loss under under-trained or over-trained regimes. |
-| Broken scaling | Caballero et al., 2023, *Broken Neural Scaling Laws* | Treat extrapolation as evidence with uncertainty, not as certainty. |
-| Compute reporting | Schwartz et al., 2019, *Green AI* | Include compute efficiency and total evaluation cost. |
-| Batch dynamics | McCandlish et al., 2018, *An Empirical Model of Large-Batch Training* | Track gradient-noise and batch-efficiency signals for recipes. |
-
-## Architecture Ownership
-
-PRISM computes canonical architecture identity from `architecture_graph.json` and its SHA-256 hash, plus source-free architecture metadata. Mermaid text is derived for review and display. It is not canonical architecture identity.
-
-The first accepted submission for a new architecture family creates an `architecture_families` record with immutable first-discovery ownership. Later accepted architecture versions may update the canonical submission, best architecture score, and metadata, or be linked as variants, but they never transfer `owner_hotkey` or the first-discovery owner slot.
-
-## Training Variant Ownership
-
-Training and inference code are fingerprinted separately from architecture code. For each architecture family, PRISM tracks training variants and the current best training script version.
-
-Training ownership includes code in:
-
-* `configure_optimizer`
-* `inference_logits` or `infer`
-* `compute_loss`
-* `train_step`
-* training helper files declared in `prism.yaml`
-
-A training variant can win the training pool for its target architecture, but it cannot redirect the architecture pool. The training pool is split across architectures using canonical architecture scores, then awarded within each architecture to the current best training owner.
-
-## Dynamic Thresholds
-
-Improvement thresholds prevent tiny metric noise from stealing ownership.
-
-| Setting | Purpose |
-| --- | --- |
-| `architecture_improvement_min_delta_abs` | Minimum absolute architecture-score improvement. |
-| `architecture_improvement_min_delta_rel` | Minimum relative architecture-score improvement. |
-| `training_improvement_min_delta_abs` | Minimum absolute training-score improvement. |
-| `training_improvement_min_delta_rel` | Minimum relative training-score improvement. |
-| `training_improvement_z_score` | Required noise-adjusted improvement margin. |
-| `training_metric_default_std` | Default standard deviation when repeats do not report one. |
-
-Architecture improvement thresholds only decide whether canonical version and best-score metadata update; they do not move first-discovery ownership. Training current-best changes use separate training thresholds.
-
-## SQL Override Policy
-
-These percentages are defaults, not hard-coded operator promises. SQL runtime config can override supported policy values for `reward_pools`, `score_weights`, and `benchmark_weights`, subject to validation. Official runtime config fails closed when SQL values are invalid. Explicit local non-scoring paths may fall back to defaults.
+| Prequential / online coding | Dawid, 1984, *Present Position and Potential Developments: Some Personal Views: Statistical Theory: The Prequential Approach* | Score the integrated online (predict-then-train) loss, not a final checkpoint. |
+| Minimum description length | Rissanen, 1978, *Modeling by Shortest Data Description* | Treat compression (code-length) as the learning signal. |
+| Scaling laws | Kaplan et al., 2020, *Scaling Laws for Neural Language Models* | Compare loss trajectories under matched compute, not raw final loss. |
+| Compute-optimal scaling | Hoffmann et al., 2022, *Training Compute-Optimal Large Language Models* | Normalize by tokens/compute so under- or over-trained regimes do not skew ranking. |
+| Dataset provenance | Penedo et al., 2024, *The FineWeb Datasets* | Freeze the data revision and shards for reproducible official runs. |

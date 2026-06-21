@@ -1,6 +1,10 @@
 # Architecture
 
-PRISM is a Platform challenge service. It runs as a FastAPI application with SQLite state, internal Platform authentication, and GPU evaluation through the Platform Docker broker.
+PRISM is a Platform challenge service. It runs as a FastAPI application with SQLite state, internal
+Platform authentication, and GPU evaluation through the Platform Docker broker. PRISM measures a
+model's ability to learn: miners submit two scripts, the challenge owns the data and the evaluation,
+and the validator re-executes the miner's training loop under a forced random init and computes the
+score itself.
 
 ## High-Level Design
 
@@ -10,14 +14,12 @@ flowchart LR
     Proxy --> Bridge[PRISM Bridge]
     Bridge --> DB[(SQLite)]
     Bridge --> Queue[Worker Queue]
-    Queue --> Review[Static Review]
-    Review --> LLM[LLM Review]
+    Queue --> Static[Static Sandbox + Param Cap + Distributed Contract]
+    Static --> LLM[OpenRouter Hard Gate]
     LLM --> Broker[Docker Broker]
-    Broker --> Eval[GPU Evaluator]
-    Eval --> Scores[Scores]
-    Scores --> Semantic[Semantic Attribution]
-    Semantic --> Holds[Review Holds]
-    Semantic --> Weights[get_weights]
+    Broker --> Reexec[Forced-Init Re-Execution Runner]
+    Reexec --> Score[Prequential bpb + Held-out Delta]
+    Score --> Weights[Dry-Run get_weights]
 ```
 
 ## Main Components
@@ -25,17 +27,19 @@ flowchart LR
 | Component | Responsibility |
 | --- | --- |
 | FastAPI app | Public and internal HTTP routes |
-| Repository | SQLite persistence for submissions, scores, sources, ownership, assignments |
-| Worker | Claims pending submissions, reviews code, dispatches evaluation, finalizes scores |
-| Component parser | Reads `prism.yaml`, separates architecture and training files, computes fingerprints |
-| Semantic signatures | Records hook metadata, call graphs, summaries, and Mermaid sketches for attribution |
-| Component agent | Compares submissions against known families and variants, then decides new/existing/variant/hold/reject outcomes |
-| Container evaluator | Writes the project into a temporary workspace and runs it in an isolated container |
-| Weights module | Converts architecture/training ownership into Platform-compatible hotkey weights |
+| Repository | SQLite persistence for submissions, scores, sources, eval jobs, and GPU leases |
+| Worker | Claims pending submissions, runs static + LLM gates, dispatches re-execution, finalizes scores |
+| Component resolver | Resolves the two-script contract (`architecture.py`/`build_model` + `training.py`/`train`) and computes fingerprints |
+| Static sandbox | AST hard-blocks over both scripts, the forced-seed parameter-cap instantiation, and the multi-GPU static contract |
+| LLM hard gate | OpenRouter review of both scripts; a `reject` is terminal before any GPU work |
+| Container runner | Challenge-owned forced-init re-execution that captures the online loss stream |
+| Scoring | Prequential bits-per-byte plus the held-out delta tie-breaker and anti-memorization gap |
+| Weights module | Converts normalized completed scores into dry-run Platform weights |
 
 ## Platform Integration
 
-Platform is responsible for miner-facing upload security. It verifies signatures, timestamps, nonces, and hotkey identity before forwarding a submission to PRISM.
+Platform is responsible for miner-facing upload security. It verifies signatures, timestamps,
+nonces, and hotkey identity before forwarding a submission to PRISM.
 
 PRISM receives verified submissions on:
 
@@ -43,19 +47,59 @@ PRISM receives verified submissions on:
 POST /internal/v1/bridge/submissions
 ```
 
-The bridge trusts only internal Platform authentication and the verified hotkey header. Miner-supplied identity headers are not trusted.
+The bridge trusts only internal Platform authentication and the verified hotkey header. Miner-supplied
+identity headers are not trusted.
+
+## Submission Contract
+
+A submission is a bundle (zip or directory snapshot) containing two distinct scripts:
+
+- `architecture.py` exposes `build_model(ctx)`, a factory returning a `torch.nn.Module`.
+- `training.py` exposes `train(ctx)`, the miner-owned training loop entrypoint.
+
+An optional `prism.yaml` may declare the entrypoints and chosen tokenizer. A single combined module
+no longer satisfies the contract: the architecture and training roles must be two distinct scripts.
 
 ## Execution Model
 
-PRISM does not execute miner submissions directly in the master process. The worker performs static inspection and optional LLM review, then sends the project to an isolated evaluator container.
-
-The current runtime path is GPU/broker oriented:
+PRISM does not execute miner submissions directly in the master process. The worker performs static
+inspection and the LLM hard gate, then sends the project to an isolated evaluator container through
+the Platform Docker broker:
 
 ```text
 PRISM worker -> DockerExecutor -> Platform Docker broker -> GPU evaluator container
 ```
 
-Legacy local CPU and Lium-style execution are intentionally not part of the supported backend set.
+The pre-GPU static gates run in this order, and a rejection at any of them is terminal before the
+LLM review and before any GPU work:
+
+1. AST sandbox hard-blocks over both scripts.
+2. Forced-seed `build_model` instantiation and the 150M parameter cap.
+3. The multi-GPU static contract and single-node bound.
+
+Legacy local-CPU and remote-Lium execution paths are not part of the supported backend set.
+
+## Forced-Init Re-Execution (Anti-Cheat Core)
+
+The challenge harness drives every scored run; the miner code only supplies the model and the loop
+body.
+
+1. The harness writes a challenge-owned runner that imports the miner's `architecture.py` and
+   `training.py`, sets the global seeds and deterministic flags (`torch.manual_seed`,
+   `cuda.manual_seed_all`, `use_deterministic_algorithms(True)`, cudnn deterministic) **before** any
+   miner code runs, then launches `torchrun --standalone --nnodes=1 --nproc-per-node=1` with
+   `MASTER_ADDR=127.0.0.1`.
+2. The runner installs an instrumented loss capture. The data iterator yields fresh, single-pass
+   batches from the read-only locked `train` split in a challenge-controlled order, and the challenge
+   records the model's per-batch loss on each new batch **before** the optimizer updates on it.
+   Because the data is single-pass, this online training loss is the prequential code-length by
+   construction.
+3. The challenge authors `prism_run_manifest.v2.json` from the captured stream. Any manifest the
+   miner writes is discarded; any metric the miner reports is ignored.
+
+The eval container is non-root, runs with a read-only rootfs except `artifacts_dir`, uses
+`network=none`, and is bounded by a wall-clock budget that is only a safety cap, never part of the
+score.
 
 ## State Model
 
@@ -64,59 +108,42 @@ PRISM stores state in SQLite. Important tables include:
 - `miners`
 - `submissions`
 - `eval_jobs`
+- `gpu_leases`
 - `scores`
 - `submission_sources`
 - `llm_reviews`
 - `plagiarism_reviews`
-- `architecture_families`
-- `training_variants`
-- `component_scores`
-- `component_signatures`
-- `component_agent_reviews`
-- `component_review_holds`
-- `ownership_events`
-- `evaluation_assignments`
+- `epochs`
 
-`component_signatures` preserves deterministic and semantic views of each project. `component_agent_reviews` stores the attribution decision, confidence, and candidate match. `component_review_holds` keeps low-confidence attribution cases out of rewards until an operator resolves them. `ownership_events` records accepted architecture metadata updates and training current-best changes; architecture first-discovery ownership remains immutable.
+`eval_jobs` tracks each evaluation attempt (including the `level='l1'` static-tracking placeholder
+created at submission time, which is not GPU work). `gpu_leases` records the exclusive single-GPU
+lease for a scored run. `scores` holds the challenge-computed prequential bits-per-byte `final_score`
+and its metrics payload.
 
-## Semantic Attribution Flow
+## Scoring Flow
 
-After GPU evaluation, PRISM builds architecture and training signatures from the submitted project:
+After the forced-init re-execution completes with a valid challenge-authored
+`prism_run_manifest.v2.json`, scoring computes everything from the challenge-owned capture:
 
-- source fingerprints and behavior fingerprints;
-- architecture and training call graphs;
-- first-class hook metadata for `configure_optimizer`, `inference_logits` / `infer`, `compute_loss`, and `train_step`;
-- architecture/training summaries;
-- optional Mermaid sketches for review.
-
-The component agent compares those signatures against existing architecture families and training variants. It can classify architecture work as new, matching, variant-linked, rejected, or held for manual review. Training work may become the current-best variant for its target architecture when policy thresholds are met.
+- the prequential bits-per-byte primary score (lower bpb yields a better `final_score`);
+- the held-out delta-over-random-init tie-breaker on the secret `val` split (a near-tie refinement
+  that never overrides the primary bpb axis);
+- the train-vs-held-out anti-memorization gap, which penalizes an excessive gap;
+- a step-0 / smuggled-weights anomaly multiplier that zeroes an anomalous run.
 
 ```mermaid
 flowchart LR
-    Eval[GPU Metrics] --> Sig[Semantic Signature]
-    Sig --> Candidates[Candidate Families and Variants]
-    Candidates --> Agent[Component Agent]
-    Agent -->|new/existing/variant| Attribution[Immutable Architecture Owner or Variant Link]
-    Agent -->|hold| Hold[Review Hold]
-    Agent -->|reject| Reject[Rejected Submission]
-    Attribution --> Weights[get_weights]
+    Reexec[Online Loss Stream] --> Bpb[Prequential bits-per-byte]
+    Bpb --> Final[final_score]
+    Heldout[Held-out Delta on Secret val] --> Final
+    Gap[Train-vs-Held-out Gap] --> Final
+    Final --> Board[Leaderboard ORDER BY final_score DESC]
+    Board --> Weights[Normalized Dry-Run Weights]
 ```
 
-## Master and Validator Modes
-
-The master can evaluate submissions via the broker-backed worker. PRISM also exposes internal validator-assignment routes so independent validators can be assigned reviewed submissions and return metrics.
-
-```mermaid
-sequenceDiagram
-    participant V as Validator
-    participant R as PRISM
-    participant DB as SQLite
-    V->>R: request assignment
-    R->>DB: claim pending submission
-    R-->>V: code and metadata
-    V->>R: submit metrics
-    R->>DB: finalize scores
-```
+The leaderboard orders by `final_score` with a deterministic earliest-commit-wins tie-break, and
+`get_weights` returns one normalized, dry-run weight per hotkey (best submission per hotkey). Weights
+are never written on-chain.
 
 ## Failure Handling
 
@@ -129,5 +156,7 @@ Submissions can end in one of these states:
 - `rejected`
 - `held`
 
-Rejected submissions fail review or contract validation. Failed submissions passed initial checks but failed evaluation or infrastructure execution.
-Held submissions require manual component-attribution resolution and do not affect weights until resolved.
+Rejected submissions fail static review, the two-script contract, the LLM hard gate, or duplicate
+review. Failed submissions passed the gates but failed the re-execution, scoring, or infrastructure.
+Held submissions are quarantined by the LLM review pending operator attention; the v1-NAS
+component-attribution holds and ownership-event machinery have been decommissioned.

@@ -1,45 +1,48 @@
 #!/usr/bin/env python
-"""Local STAGING E2E smoke driver for the Prism challenge pipeline.
+"""Local STAGING E2E smoke driver for the Prism v2 challenge pipeline.
 
 WHAT THIS IS
 ------------
 A reproducible, fully LOCAL replica of the production submission pipeline. It
 spins up the *real* FastAPI app (`create_app`) against a FRESH temp SQLite DB
 initialised by the repo's own startup/migrations, submits a synthetic dev-signed
-MINER submission, drives the worker via the internal ``process-next`` endpoint
-until the submission reaches a terminal state, and then reports whether a
+v2 TWO-SCRIPT bundle (`architecture.py` + `training.py`), drives the worker via
+the internal ``process-next`` endpoint until the submission reaches a terminal
+state (or the GPU lease cannot be satisfied locally), and reports whether a
 ``scores`` row was written and whether the public leaderboard contains the id.
 
 NO prod. NO network. NO real keys. Dev/insecure HMAC signing only
-(``allow_insecure_signatures=True`` + the shared token "secret").
+(``allow_insecure_signatures=True`` + the shared token "secret"). The OpenRouter
+LLM hard gate is disabled here (no key on a local box) and the multi-GPU static
+contract is set to ``off`` so a minimal training double passes the static gates;
+both are exercised in their own test suites.
+
+The scored forced-init re-execution is GPU-only: this driver runs with NO GPU
+target (``platform_gpu_targets='[]'``), so the GPU lease cannot be satisfied and
+the submission bounces back to ``pending`` rather than completing. That is the
+EXPECTED local outcome -- the harness proves the static + review path and the
+guard rails, not the GPU re-execution (that lives in the live GPU drive).
 
 HOW TO RUN (headless)
 ---------------------
-    cd /droid/prism-challenge && .venv/bin/python scripts/staging_e2e.py
+    cd /projects/platform-network/prism && .venv/bin/python scripts/staging_e2e.py
 
 Exit code is 0 on a successful *run of the harness* (the pipeline trace is
-printed regardless of whether the pipeline itself is green). A non-zero exit
+printed regardless of whether the pipeline itself completes). A non-zero exit
 means the harness itself failed (e.g. submit was rejected, worker errored).
 
 REPRODUCIBLE ENV / KNOBS
 ------------------------
-- ``STAGING_DB``            : path to the temp SQLite file to use. If unset a
-                              throwaway temp dir is created per run (recommended).
-                              Never point this at a prod DB.
-- ``STAGING_PUBLIC_FLAG``   : "1"/"0" to toggle ``public_submissions_enabled``
-                              (default "1"). Set "0" to assert the 404 guard.
-- ``STAGING_EXEC_MODE``     : submission ``metadata.execution_mode``. Default
-                              "local_cpu_smoke" -- the ONLY eval path that can
-                              run to completion on a local CPU box. Set to
-                              "" (empty) to exercise the DEFAULT path
-                              (GPU_PROXY_EVAL -> full container/finalize path,
-                              queue.py:1142). EMPIRICALLY this path acquires the
-                              synthetic "local-platform" GPU lease and then BLOCKS
-                              on a real container eval that never returns on a
-                              CPU-only box -- i.e. the default config is NOT
-                              completable locally, so the local-completable smoke
-                              path (local_cpu_smoke) is the harness default.
-                              (Setting it empty will HANG; use only to confirm.)
+- ``STAGING_DB``          : path to the temp SQLite file to use. If unset a
+                            throwaway temp dir is created per run (recommended).
+                            Never point this at a prod DB.
+- ``STAGING_PUBLIC_FLAG`` : "1"/"0" to toggle ``public_submissions_enabled``
+                            (default "1"). Set "0" to assert the 404 guard.
+- ``STAGING_EXEC_MODE``   : submission ``metadata.execution_mode``. Default ""
+                            (empty) exercises the DEFAULT path
+                            (``gpu_proxy_eval``). Valid non-empty values are the
+                            live ExecutionMode members: ``gpu_proxy_eval`` and
+                            ``full_scale_eval``.
 
 SYNTHETIC MINER KEY PAIR
 ------------------------
@@ -61,7 +64,8 @@ from pathlib import Path
 
 # --- make the repo importable as a standalone script -------------------------
 # pytest sets pythonpath=["src"]; a plain script must do it itself. We also add
-# the tests dir so we can REUSE the existing dev-signing helper from conftest.
+# the tests dir so we can REUSE the existing dev-signing helper + v2 bundle
+# builder from conftest.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SRC = _REPO_ROOT / "src"
 _TESTS = _REPO_ROOT / "tests"
@@ -69,9 +73,9 @@ for _p in (str(_SRC), str(_TESTS)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-# Reuse the EXISTING dev-signing helper + sample model code from the test suite
-# (no real key needed; it accepts hotkey=). This is the synthetic key path.
-from conftest import VALID_CODE, signed_headers  # noqa: E402
+# Reuse the EXISTING dev-signing helper + v2 two-script bundle builder from the
+# test suite (no real key needed; it accepts hotkey=). This is the synthetic key path.
+from conftest import signed_headers, two_script_bundle  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from prism_challenge.app import create_app  # noqa: E402
@@ -99,6 +103,14 @@ def build_settings(db_path: Path, *, public_flag: bool) -> PrismSettings:
         validator_hotkeys=(VALIDATOR_HOTKEY,),
         plagiarism_enabled=False,
         fineweb_sample_count=4,
+        # No OpenRouter key locally -> disable the LLM hard gate (covered in test_*llm*).
+        llm_review_enabled=False,
+        # The minimal training double is single-process; skip the multi-GPU static contract
+        # (covered in test_prism_distributed_contract.py).
+        distributed_contract_policy="off",
+        # No GPU target locally: the scored re-execution lease cannot be satisfied, so the
+        # submission bounces to pending rather than blocking on a container eval.
+        platform_gpu_targets="[]",
     )
 
 
@@ -109,11 +121,11 @@ def submit(
     nonce: str,
     exec_mode: str | None,
 ) -> tuple[int, dict]:
-    """POST a synthetic dev-signed submission as the given miner hotkey."""
+    """POST a synthetic dev-signed v2 two-script submission as the given miner hotkey."""
     metadata: dict[str, object] = {}
     if exec_mode:
         metadata["execution_mode"] = exec_mode
-    payload = {"code": VALID_CODE, "filename": "model.py", "metadata": metadata}
+    payload = {"code": two_script_bundle(), "filename": "project.zip", "metadata": metadata}
     body = json.dumps(payload).encode()
     headers = signed_headers(SHARED_TOKEN, body, hotkey=hotkey, nonce=nonce)
     headers["Content-Type"] = "application/json"
@@ -164,7 +176,7 @@ def leaderboard_contains(client: TestClient, submission_id: str) -> bool:
 
 
 def drive_to_terminal(client: TestClient, submission_id: str) -> str:
-    """Call process-next repeatedly, tracing each hop, until terminal."""
+    """Call process-next repeatedly, tracing each hop, until terminal or capped."""
     status = submission_status(client, submission_id)
     log(f"STEP status_initial={status}")
     for i in range(1, MAX_PROCESS_STEPS + 1):
@@ -174,11 +186,11 @@ def drive_to_terminal(client: TestClient, submission_id: str) -> str:
         if status in TERMINAL_STATES:
             return status
         if returned is None and status not in TERMINAL_STATES:
-            # Nothing left claimable yet status is non-terminal: the default
-            # GPU path bounces the row back to pending/queued with no local GPU.
+            # Nothing left claimable yet status is non-terminal: the GPU re-execution
+            # lease cannot be satisfied on this local box, so the row stays pending.
             log(
                 f"NOTE process_next returned None while status={status!r} "
-                "-> submission not claimable to completion on this local box"
+                "-> submission not claimable to completion on this local box (no GPU)"
             )
             return status
     log(f"NOTE reached MAX_PROCESS_STEPS={MAX_PROCESS_STEPS} without terminal state")
@@ -186,8 +198,8 @@ def drive_to_terminal(client: TestClient, submission_id: str) -> str:
 
 
 def run_happy_path(client: TestClient, db_path: Path, exec_mode: str | None) -> None:
-    log("=== HAPPY PATH: synthetic miner submission -> process_next -> leaderboard ===")
-    log(f"NOTE exec_mode={exec_mode!r} (empty => default GPU_PROXY_EVAL path)")
+    log("=== HAPPY PATH: synthetic v2 two-script submission -> process_next -> leaderboard ===")
+    log(f"NOTE exec_mode={exec_mode!r} (empty => default gpu_proxy_eval path)")
     code, data = submit(client, hotkey=MINER_HOTKEY, nonce="miner-n1", exec_mode=exec_mode)
     if code != 200:
         log(f"STEP submit -> {code} body={data}")
@@ -204,25 +216,18 @@ def run_happy_path(client: TestClient, db_path: Path, exec_mode: str | None) -> 
     in_board = leaderboard_contains(client, submission_id)
     log(f"STEP leaderboard_contains_id={'true' if in_board else 'false'}")
 
-    # Which eval path did we exercise? Make it explicit & greppable.
-    if exec_mode == "local_cpu_smoke":
-        log(
-            "NOTE eval_path=local_cpu_smoke (queue.py:695-699) -> marks COMPLETED "
-            "WITHOUT inserting a scores row (the T13 leak)"
-        )
-    elif not exec_mode:
-        log(
-            "NOTE eval_path=default GPU_PROXY_EVAL -> full container/finalize path "
-            "(queue.py:1142); not completable on a local CPU box"
-        )
+    log(
+        "NOTE eval_path=forced-init GPU re-execution (gpu_proxy_eval). The scored run is GPU-only; "
+        "with no local GPU target the lease cannot be satisfied and the row stays pending."
+    )
 
-    if final_status == "completed" and not scores:
-        log(
-            "RESULT BASELINE-DEFECT: submission COMPLETED but NO scores row -> "
-            "leaderboard cannot include it (T13 completed-without-scores leak)"
-        )
-    elif final_status == "completed" and scores and in_board:
+    if final_status == "completed" and scores and in_board:
         log("RESULT GREEN: completed + scores row + present on leaderboard")
+    elif final_status == "pending" and not scores:
+        log(
+            "RESULT LOCAL-EXPECTED: static + review gates passed; GPU re-execution lease "
+            "unavailable locally, so the submission is parked at pending with no score"
+        )
     else:
         log(
             f"RESULT status={final_status} scores={'present' if scores else 'MISSING'} "
@@ -233,14 +238,14 @@ def run_happy_path(client: TestClient, db_path: Path, exec_mode: str | None) -> 
 def run_validator_guard_check(client: TestClient) -> None:
     """Bonus: the validator hotkey must be refused (403) by the anti-self guard."""
     log("=== BONUS: validator self-submission guard (expect 403) ===")
-    code, _ = submit(client, hotkey=VALIDATOR_HOTKEY, nonce="val-n1", exec_mode="local_cpu_smoke")
+    code, _ = submit(client, hotkey=VALIDATOR_HOTKEY, nonce="val-n1", exec_mode=None)
     ok = code == 403
     log(f"STEP validator_submit -> {code} guard_ok={'true' if ok else 'false'}")
 
 
 def main() -> int:
     public_flag = os.environ.get("STAGING_PUBLIC_FLAG", "1") == "1"
-    exec_mode_env = os.environ.get("STAGING_EXEC_MODE", "local_cpu_smoke")
+    exec_mode_env = os.environ.get("STAGING_EXEC_MODE", "")
     exec_mode: str | None = exec_mode_env if exec_mode_env != "" else None
 
     staging_db = os.environ.get("STAGING_DB")
@@ -254,7 +259,7 @@ def main() -> int:
         tmpdir = tempfile.TemporaryDirectory(prefix="prism-staging-")
         db_path = Path(tmpdir.name) / "prism.sqlite3"
 
-    log("=== Prism LOCAL STAGING E2E smoke ===")
+    log("=== Prism LOCAL STAGING E2E smoke (v2 two-script) ===")
     log(f"NOTE db_path={db_path} (fresh, isolated; initialised by app startup)")
     log(f"NOTE public_submissions_enabled={public_flag} validator_hotkeys=({VALIDATOR_HOTKEY!r},)")
     log(f"NOTE synthetic_miner_keypair: public_id={MINER_HOTKEY!r} secret=<shared_token 'secret'>")

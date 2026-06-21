@@ -14,7 +14,8 @@ Returns challenge version, API version, SDK version, and capabilities.
 
 ### `POST /v1/submissions`
 
-Submit a model project directly to PRISM. In production, miner submissions should usually enter through the Platform proxy.
+Submit a two-script bundle directly to PRISM. In production, miner submissions usually enter through
+the Platform proxy.
 
 Request:
 
@@ -26,7 +27,12 @@ Request:
 }
 ```
 
-The direct public route uses miner authentication headers. Platform bridge uploads use an internal route instead.
+The direct public route uses miner authentication headers. Platform bridge uploads use the internal
+route instead.
+
+### `GET /v1/submissions/history`
+
+Returns daily submission counts over a window.
 
 ### `GET /v1/submissions/{submission_id}`
 
@@ -42,48 +48,47 @@ Returns status and score fields:
   "created_at": "...",
   "error": null,
   "final_score": 0.72,
-  "q_arch": 0.8,
-  "q_recipe": 0.6
+  "anti_cheat_multiplier": 1.0
 }
 ```
 
-`status` can be `pending`, `running`, `completed`, `failed`, `rejected`, or `held`. Held submissions are awaiting manual component-attribution resolution and do not affect weights.
+`final_score` is the challenge-computed prequential bits-per-byte score (a lower bpb yields a higher
+`final_score`). The response also carries `q_arch`, `q_recipe`, `diversity_bonus`, and `penalty` as
+legacy fields retained for response-schema stability; the live scoring path populates `final_score`.
+
+`status` can be `pending`, `running`, `completed`, `failed`, `rejected`, or `held`. Rejected
+submissions failed a static gate, the two-script contract, the LLM hard gate, or duplicate review.
+Held submissions are quarantined by the LLM review.
 
 ### `GET /v1/leaderboard`
 
-Returns ranked submissions for the current epoch.
+Returns submissions ranked by `final_score` for the current epoch (earliest-commit-wins on a tie, one
+entry per hotkey).
 
 ### `GET /v1/architectures`
 
-Returns known architecture families.
-
-```json
-[
-  {
-    "id": "...",
-    "family_hash": "...",
-    "owner_hotkey": "...",
-    "owner_submission_id": "...",
-    "canonical_submission_id": "...",
-    "q_arch_best": 0.9,
-    "created_at": "...",
-    "updated_at": "..."
-  }
-]
-```
+Legacy family-listing endpoint retained for API compatibility.
 
 ### `GET /v1/training-variants`
 
-Optional query parameters:
-
-- `architecture_id`
-- `limit`
-
-Returns training variants and current-best state.
+Legacy variant-listing endpoint retained for API compatibility. Optional query parameters:
+`architecture_id`, `limit`.
 
 ### `GET /v1/epochs/current`
 
 Returns the current epoch id and epoch length.
+
+### `GET /v1/epochs`
+
+Returns recent epochs.
+
+### `GET /v1/health/eval-jobs`
+
+Returns recent eval-job health entries (id, submission id, level, status, attempts).
+
+### `GET /v1/gpu/status`
+
+Returns a GPU-lease summary (total GPUs, active leases, by status, by tier).
 
 ## Internal Platform Routes
 
@@ -95,7 +100,8 @@ Authorization: Bearer <shared-token>
 
 ### `GET /internal/v1/get_weights`
 
-Standard Platform challenge contract. Returns normalized hotkey weights.
+Standard Platform challenge contract. Returns normalized, dry-run hotkey weights (one per hotkey, from
+that hotkey's best `final_score`). Weights are never written on-chain.
 
 ### `POST /internal/v1/bridge/submissions`
 
@@ -114,96 +120,5 @@ The body can be raw ZIP bytes or JSON matching `SubmissionCreate`.
 
 ### `POST /internal/v1/worker/process-next`
 
-Claims and processes one pending submission.
-
-### `POST /internal/v1/worker/poll`
-
-Polls remote jobs. This is retained for compatibility with asynchronous job flows.
-
-### `GET /internal/v1/component-review/holds`
-
-Lists low-confidence semantic attribution holds.
-
-Response:
-
-```json
-[
-  {
-    "id": "...",
-    "submission_id": "...",
-    "status": "pending",
-    "reason": "low confidence component attribution",
-    "confidence": 0.61,
-    "created_at": "...",
-    "updated_at": "..."
-  }
-]
-```
-
-### `POST /internal/v1/component-review/holds/{hold_id}/resolve`
-
-Resolves a held submission with an operator attribution decision.
-
-Request:
-
-```json
-{
-  "architecture_action": "existing",
-  "training_action": "new",
-  "architecture_id": "7ec2c3a8-...",
-  "training_variant_id": null,
-  "reason": "manual review confirmed same architecture and new training hook"
-}
-```
-
-Allowed architecture actions are `new`, `existing`, and `reject`; architecture ownership is first-discovery immutable, so operator resolution must not move the architecture `owner_hotkey`. Allowed training actions are `new`, `existing`, `transfer`, `reject`, and `none`, where `transfer` is reserved for training current-best ownership.
-
-## Validator Assignment Routes
-
-These routes support validator-assignment operation.
-
-### `POST /internal/v1/validators/assignments/next`
-
-Headers:
-
-```text
-X-Validator-Hotkey: <validator-hotkey>
-```
-
-Returns an assignment or `null`.
-
-### `POST /internal/v1/validators/assignments/{assignment_id}/accept`
-
-Marks an assignment as accepted.
-
-### `POST /internal/v1/validators/assignments/{assignment_id}/reject`
-
-Request:
-
-```json
-{
-  "reason": "busy"
-}
-```
-
-Rejects an assignment and requeues the submission if attempts remain.
-
-### `POST /internal/v1/validators/assignments/{assignment_id}/result`
-
-Request:
-
-```json
-{
-  "metrics": {
-    "q_arch": 0.8,
-    "q_recipe": 0.7,
-    "train_loss": 1.0
-  }
-}
-```
-
-Finalizes the assignment and records scores.
-
-### `POST /internal/v1/validators/assignments/expire`
-
-Expires stale assignments and requeues or fails submissions according to the configured attempt limit.
+Claims and processes one pending submission through the full pipeline: static gates, the OpenRouter
+LLM hard gate, the forced-init re-execution, and prequential bits-per-byte scoring.

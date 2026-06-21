@@ -2,34 +2,42 @@
 
 ## Purpose
 
-PRISM lets validators operate a neural architecture search challenge for Platform. Validators accept miner submissions, run safety review and isolated evaluations, attribute architecture and training ownership, and expose final raw weights to Platform.
+PRISM lets validators operate an "ability to learn" challenge for Platform. Validators accept signed
+miner submissions, run the static sandbox and the OpenRouter LLM hard gate, re-execute the miner's
+training loop under a forced random init on locked data, compute the prequential bits-per-byte score
+themselves, and expose normalized dry-run weights to Platform.
 
 ## Responsibilities
 
 Validators are responsible for:
 
-* accepting only signed miner submissions
-* enforcing replay protection and size limits
-* keeping evaluation isolated from the validator host
-* configuring benchmark budgets and component reward thresholds
-* reviewing low-confidence architecture matches, architecture variants, and training current-best changes
-* protecting shared Platform, broker, and review-provider tokens
-* monitoring scoring, holds, quarantine, failures, and exported weights
+* accepting only signed miner submissions and enforcing replay protection and size limits;
+* keeping evaluation isolated from the validator host (broker-backed containers, `network=none`);
+* keeping the locked `val`/`test` splits secret and never exposing them to a miner script;
+* forcing the seed and deterministic flags so runs reproduce;
+* computing the score from the challenge-owned capture, never trusting miner-reported numbers;
+* protecting shared Platform, broker, and OpenRouter tokens;
+* monitoring scoring, rejections, failures, quarantine, and exported weights.
 
 ## Evaluation Lifecycle
 
-1. A miner submits a signed bundle.
-2. PRISM validates hotkey, timestamp, nonce, and submission size.
-3. The bundle is parsed and reviewed for safety.
-4. Architecture and training fingerprints are computed.
-5. Proxy evaluation measures learning, recipe, stability, and scaling signals.
-6. Component attribution assigns architecture and training ownership.
-7. Final scores are persisted with metrics and audit information.
-8. Platform reads the exported hotkey weights.
+1. A miner submits a signed two-script bundle.
+2. PRISM validates the hotkey, timestamp, nonce, and submission size.
+3. The bundle is resolved into the two-script contract and inspected by the AST sandbox.
+4. The forced-seed `build_model` instantiation enforces the 150M parameter cap.
+5. The multi-GPU static contract and single-node bound are checked.
+6. The OpenRouter LLM hard gate reviews both scripts; a `reject` is terminal before any GPU work.
+7. The challenge re-executes `training.py` under a forced random init on the locked train split and
+   captures the single-pass online loss itself.
+8. PRISM computes the prequential bits-per-byte score, the held-out delta tie-breaker, and the
+   anti-memorization gap, and writes `prism_run_manifest.v2.json`.
+9. Scores persist; the leaderboard ranks by `final_score`; Platform reads normalized dry-run weights.
 
 ## Runtime Configuration
 
-PRISM settings use the `PRISM_` prefix and accept compatible `CHALLENGE_` values when orchestrated by Platform. These settings bootstrap the process and provide fallback defaults. Runtime challenge policy is SQL-first.
+PRISM settings use the `PRISM_` prefix and accept compatible `CHALLENGE_` values for the fields that
+declare them. These settings bootstrap the process and provide fallback defaults. Runtime challenge
+policy is SQL-first.
 
 Precedence is:
 
@@ -37,83 +45,72 @@ Precedence is:
 SQL active value → env/Pydantic default → schema default
 ```
 
-SQL runtime config can override supported policy values. Official runtime config fails closed when an active SQL value is invalid. Explicit local non-scoring paths may fall back to defaults.
+SQL runtime config can override supported policy values. Official runtime config fails closed when an
+active SQL value is invalid.
 
 ## SQL Runtime Config Keys
 
-The implemented SQL policy keys are:
+The validated SQL policy rows are:
 
 | Key | Policy area |
 | --- | --- |
-| `reward_pools` | Architecture and training reward pool split. Defaults to 60% and 40%. |
-| `score_weights` | Final score blend and official architecture/training component formulas. Defaults to 70%/30% final blend. |
-| `benchmark_weights` | Benchmark sanity mix across MMLU, GSM8K, MATH, HumanEval, ARC-Challenge, Needle, IFEval, and TruthfulQA. |
-| `duplicate_thresholds` | Source, graph, quarantine, and static reject thresholds. |
-| `llm_review_policy` | LLM enabled, required, confidence, timeout, and evidence-required rejection policy. |
-| `gpu_policy` | Maximum GPU count, actual fixed official GPU count, GPU type, fixed-profile flag, and smoke autosplit flag. |
-| `dataset_configs` | FineWeb-Edu sample count, revision, splits, and network fallback policy. |
-| `execution_mode_targets` | `local_cpu_smoke`, `gpu_proxy_eval`, and `full_scale_eval` targets. |
-| `artifact_limits` | Code and artifact size limits plus required manifest name. |
+| `reward_pools` | Validated weight-split row (compat). Live weights are normalized per hotkey from the bits-per-byte `final_score`. |
+| `score_weights` | Validated score-weight row (compat). The live primary score is challenge-computed prequential bits-per-byte. |
+| `benchmark_weights` | Validated benchmark-mix row (compat); not part of the live bits-per-byte score. |
+| `duplicate_thresholds` | Source/graph/quarantine/static-reject duplicate thresholds. |
+| `llm_review_policy` | OpenRouter LLM hard-gate enable/required, base URL, model, confidence, timeout, evidence policy. |
+| `gpu_policy` | Maximum GPU count, actual fixed GPU count, GPU type, and the fixed-profile flag. |
+| `dataset_configs` | Locked FineWeb-Edu sample count, frozen revision, and split names. |
+| `execution_mode_targets` | The `gpu_proxy_eval` and `full_scale_eval` token/GPU targets. |
+| `artifact_limits` | Code and artifact size limits plus the required `prism_run_manifest.v2.json` name. |
 | `sandbox_limits` | Docker, CPU, memory, PID, timeout, network, and read-only limits. |
 | `diagnostics_thresholds` | Activation, gradient, attention, and representation health thresholds. |
-| `loss_comparability_policy` | Comparable-loss requirements and redistribution behavior. |
+| `loss_comparability_policy` | Comparable-loss requirements and byte-normalized fallback. |
 
-Runtime config rows are audited with `config_key`, `value_json`, `schema_version`, `updated_by`, `updated_at`, `effective_from`, and `enabled`. Active rows are selected by key using enabled rows whose `effective_from` time has arrived, then the newest `effective_from`, `updated_at`, and row id marker wins.
+Runtime config rows are audited with `config_key`, `value_json`, `schema_version`, `updated_by`,
+`updated_at`, `effective_from`, and `enabled`. Active rows are selected by key, using enabled rows
+whose `effective_from` has arrived, with the newest `effective_from`, `updated_at`, and row id
+winning.
 
 ## Environment Settings
 
 | Setting | Purpose |
 | --- | --- |
-| `PRISM_DATABASE_URL` | Persistent storage location. |
-| `PRISM_SHARED_TOKEN` | Shared token for Platform internal calls. Prefer file delivery. |
-| `PRISM_SHARED_TOKEN_FILE` | File containing the shared token. |
-| `PRISM_PUBLIC_SUBMISSIONS_ENABLED` | Enables public miner submissions. |
+| `PRISM_DATABASE_URL` | Persistent SQLite storage location. |
+| `PRISM_SHARED_TOKEN` / `PRISM_SHARED_TOKEN_FILE` | Shared token for Platform internal calls (prefer file delivery). |
+| `PRISM_PUBLIC_SUBMISSIONS_ENABLED` | Enables the direct public miner submission route. |
 | `PRISM_SIGNATURE_TTL_SECONDS` | Replay-protection timestamp window. |
-| `PRISM_EPOCH_SECONDS` | PRISM scoring epoch length. |
+| `PRISM_EPOCH_SECONDS` | Scoring epoch length. |
 | `PRISM_MAX_CODE_BYTES` | Maximum submission size. |
-| `PRISM_MAX_PARAMETERS` | Maximum accepted model parameters. |
-| `PRISM_MAX_LAYERS` | Maximum accepted layer count. |
-| `PRISM_SEQUENCE_LENGTH` | Default proxy sequence length. |
-| `PRISM_FINEWEB_SAMPLE_COUNT` | FineWeb-style sample count for local defaults. |
-| `PRISM_EXECUTION_BACKEND` | Evaluation backend mode. |
-| `PRISM_DOCKER_ENABLED` | Enables isolated container execution. |
-| `PRISM_DOCKER_BACKEND` | Local or broker-backed execution. |
-| `PRISM_DOCKER_BROKER_URL` | Broker URL for remote execution. |
-| `PRISM_PLATFORM_EVAL_IMAGE` | Evaluation image. |
-| `PRISM_PLATFORM_EVAL_MAX_GPU_COUNT` | Maximum official GPU count. Default and hard max are 8. |
-| `PRISM_PLATFORM_EVAL_GPU_COUNT` | Fixed official GPU count. Default is 1. |
+| `PRISM_MAX_PARAMETERS` | Hard parameter cap (default 150M). |
+| `PRISM_PLATFORM_EVAL_IMAGE` | Augmented `prism-evaluator` image (sentencepiece + offline tiktoken). |
+| `PRISM_PLATFORM_EVAL_DATA_DIR` | Read-only locked FineWeb-Edu **train** mount. |
+| `PRISM_PLATFORM_EVAL_VAL_DATA_DIR` | Secret held-out **val** split (scorer-only; never mounted into the eval container). |
+| `PRISM_PLATFORM_EVAL_MAX_GPU_COUNT` | Maximum GPU count (default and hard max 8). |
+| `PRISM_PLATFORM_EVAL_GPU_COUNT` | Scored GPU count (default 1; the `nproc=1` path). |
+| `PRISM_DISTRIBUTED_CONTRACT_POLICY` | `reject` / `flag` / `off` for the multi-GPU static contract. |
+| `PRISM_LLM_REVIEW_ENABLED` | Enables the OpenRouter LLM hard gate (default on). |
+| `PRISM_OPENROUTER_MODEL` | LLM model (default `openai/gpt-4o`). |
 
-Use secret files for shared tokens, broker tokens, and review-provider keys. Do not store real secrets in YAML examples or docs.
+Use secret files for the shared token, broker token, and OpenRouter key. Do not store real secrets in
+YAML examples or docs.
 
-## Component Reward Configuration
+## FineWeb-Edu And Execution Modes
 
-Default component reward pools are 60% architecture and 40% training. SQL `reward_pools` can override those shares when the values sum to 1.0.
-
-Official score formula defaults are documented in [Scoring and Rewards](../scoring.md). SQL `score_weights` can override supported final score blend values, and runtime validation checks weight sums and benchmark sanity caps.
-
-## FineWeb-Edu and Evaluator Modes
-
-| Mode | Operator use | Official score eligible |
+| Mode | Operator use | Dataset target |
 | --- | --- | --- |
-| `local_cpu_smoke` | Local CPU wiring check against the tiny fixture. | No |
-| `gpu_proxy_eval` | Official proxy contract against configured `sample-10BT` shards. | Yes |
-| `full_scale_eval` | Official full-scale contract against configured `sample-100BT` shards. | Yes |
+| `gpu_proxy_eval` | Default official scored re-execution. | FineWeb-Edu `sample-10BT` locked shards. |
+| `full_scale_eval` | Larger official scored re-execution. | FineWeb-Edu `sample-10BT` then `sample-100BT` phases. |
 
-Local smoke verification:
-
-```bash
-pytest tests/test_local_cpu_smoke_eval.py -q
-```
-
-That command does not run official full-scale training. CI does not run 10B or 100B token training.
+Both modes are score-eligible and run on the locked, read-only FineWeb-Edu data with `network=none`.
+The retired local-CPU smoke mode is gone.
 
 ## GPU Policy
 
-Official scoring uses a fixed GPU resource profile from `gpu_policy`. The maximum is 8 GPUs. Defaults request 1 GPU from a max of 8. Autosplit is allowed only for non-scoring or development paths such as smoke evaluation.
+Official scoring uses a fixed GPU profile from `gpu_policy`. The maximum is 8 GPUs, and the scored run
+uses 1 GPU (`torchrun --standalone --nnodes=1 --nproc-per-node=1`). PRISM is single-node only.
 
 ## Public Miner Surface
-
-Miners and dashboards use:
 
 ```http
 POST /v1/submissions
@@ -126,77 +123,49 @@ GET /v1/epochs/current
 
 ## Platform Contract
 
-Health check:
-
 ```http
 GET /health
-```
-
-Version and capability check:
-
-```http
 GET /version
-```
-
-Weight request:
-
-```http
 GET /internal/v1/get_weights
 Authorization: Bearer <shared-token>
 X-Platform-Challenge-Slug: prism
 ```
 
-Example response:
+`get_weights` returns one normalized weight per hotkey (best submission per hotkey). Weights are
+always dry-run and are never written on-chain.
 
-```json
-{
-  "challenge_slug": "prism",
-  "epoch": 1760000000,
-  "weights": {
-    "5Abc...": 0.91
-  }
-}
-```
+## Review And Quarantine
 
-## Review and Holds
-
-PRISM can use static checks, duplicate checks, and optional semantic review. LLM review is evidence-gated: `submit_mermaid` must happen before `submit_verdict`, and deterministic evidence is required for rejection. Suspicion-only results go to quarantine or hold instead of immediate rejection.
-
-Operators should review holds when:
-
-* the new submission is very similar to an existing family
-* the metric improvement is near the threshold
-* the semantic reviewer cannot confidently decide whether architecture work is novel, matching, variant-linked, or invalid
-* the submission appears to improve training while changing architecture structure
+PRISM uses the static AST sandbox, the forced-seed parameter cap, the multi-GPU static contract, the
+OpenRouter LLM hard gate, and a deterministic duplicate check. A `reject` from any static gate or the
+LLM gate is terminal before any GPU work. A borderline duplicate is folded into a terminal rejection
+at ingress: there is no operator hold-resolution surface (the v1-NAS component-review and ownership
+machinery was decommissioned).
 
 ## Operator Checklist
 
 Before accepting submissions:
 
-1. Configure persistent storage.
-2. Configure shared Platform token delivery through files or another secret manager.
-3. Configure broker and evaluation image settings.
-4. Set submission size, parameter, layer, and sequence limits.
-5. Decide whether semantic and LLM review are advisory or required.
-6. Run `pytest tests/test_config.py -q` and `pytest tests/test_local_cpu_smoke_eval.py -q` locally.
-7. Submit a known-safe test bundle.
-8. Confirm leaderboard, architectures, training variants, current epoch, and weights.
+1. Configure persistent SQLite storage.
+2. Configure shared-token delivery through files or a secret manager.
+3. Configure the broker, the augmented evaluator image, and the read-only locked-data mounts.
+4. Set submission size and parameter limits.
+5. Provide the OpenRouter key (the LLM hard gate is on by default).
+6. Run `pytest tests/test_config.py -q` and the scoring/harness suites locally.
+7. Submit a known-safe two-script bundle and confirm the leaderboard and `get_weights`.
 
 During operation:
 
-* monitor failed evaluations, quarantine, held component reviews, and training current-best changes
-* keep epoch settings stable during active rounds
-* inspect anomalous architecture matches, architecture variants, and training current-best changes
-* back up persistent state
-* rotate shared, broker, and review tokens if exposed
-* keep untrusted code isolated from host resources
+* monitor rejected, failed, quarantined, and completed submissions separately;
+* keep epoch settings stable during active rounds;
+* keep the `val`/`test` splits secret and the eval container on `network=none`;
+* keep broker, Platform, and OpenRouter tokens out of logs;
+* confirm no on-chain weight-setter exists (weights stay dry-run).
 
 ## Security Checklist
 
 * Require hotkey signatures unless running a controlled local test.
-* Keep replay windows short.
-* Reject oversized submissions.
-* Keep network access blocked for evaluation unless explicitly required.
-* Keep broker and Platform tokens out of logs.
+* Keep replay windows short and reject oversized submissions.
+* Keep the eval container on `network=none` and the rootfs read-only except `artifacts_dir`.
+* Keep the locked `val`/`test` splits out of any miner-visible path, fixture, or log.
 * Treat LLM review output as sensitive audit data.
-* Use low-confidence holds and quarantine for ambiguous ownership changes.

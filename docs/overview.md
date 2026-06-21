@@ -1,91 +1,82 @@
 # PRISM Overview
 
-PRISM is a decentralized neural architecture search challenge for Platform Network. It turns Bittensor miners into distributed researchers who propose architecture, training, and inference ideas as executable Python projects.
+PRISM is an "ability to learn" machine-learning challenge for Platform Network. It turns Bittensor
+miners into researchers who submit a model and a training procedure as two executable Python scripts,
+then competes them on how well their model learns from scratch on locked data.
 
 ## Purpose
 
-Frontier models are too expensive to train directly inside a subnet evaluation loop. PRISM evaluates compact proxy models instead. These smaller models make it possible to test architectural motifs, optimizer choices, loss functions, train-step behavior, and inference hooks quickly while still producing useful signals about which ideas may scale.
+PRISM does not ask miners to train a frontier model. It asks a sharper question: given a fixed dataset
+and a forced random initialization, how quickly does a model learn? PRISM measures that as online
+compression: the better a model predicts each new chunk of text before training on it, the better it
+compresses the stream, and the better it scores.
 
 PRISM is designed to answer questions such as:
 
-- Which architecture families learn fastest under fixed resource budgets?
-- Which training recipes improve stability or sample efficiency?
-- Which inference hooks improve quality without excessive latency?
-- Which optimizer, loss, and train-step changes remain stable as batch, depth, sequence length, and parameter count increase?
-- Which ideas remain strong across repeated small-model evaluations?
+- Which architectures learn fastest from scratch under a fixed compute budget?
+- Which training loops (optimizer, schedule, data ordering, distributed strategy) improve sample efficiency?
+- Which ideas hold up when the validator, not the miner, controls the seed, the data, and the metric?
 
-## Decentralized NAS
+## How It Works
 
-Classical NAS is usually centralized: one lab defines a search space, runs experiments, and owns the results. PRISM decentralizes that process:
-
-- Miners explore the search space independently.
-- Platform verifies miner identity and forwards submissions.
-- PRISM reviews and evaluates the code.
-- Architecture and training ownership are recorded on challenge state.
-- Weights are emitted to reward the miners who contributed meaningful improvements.
+- Miners submit two scripts: a model `architecture.py` and a custom `training.py` loop.
+- Platform verifies miner identity and forwards the submission.
+- PRISM runs a static AST sandbox and an OpenRouter LLM hard gate over both scripts.
+- The validator re-executes the training loop under a forced random init on the locked FineWeb-Edu
+  train split, capturing the online loss stream itself.
+- PRISM computes a prequential bits-per-byte score with a held-out delta tie-breaker.
+- Scores rank on the leaderboard and convert into normalized, dry-run Platform weights.
 
 ```mermaid
 flowchart LR
-    A[Search Space] --> M1[Miner A]
-    A --> M2[Miner B]
-    A --> M3[Miner C]
-    M1 --> P[PRISM]
-    M2 --> P
-    M3 --> P
-    P --> R[Rewards]
+    A[Locked FineWeb-Edu] --> P[PRISM]
+    M1[Miner A] --> P
+    M2[Miner B] --> P
+    M3[Miner C] --> P
+    P --> R[Prequential bits-per-byte + Held-out Delta]
+    R --> W[Dry-Run Weights]
 ```
 
 ## What Miners Submit
 
-Miners submit ZIP projects containing Python code. A project can define:
+A submission is a bundle (zip or directory) containing two distinct scripts:
 
-- a complete model and training recipe;
-- an architecture only;
-- a training or inference improvement for an existing architecture.
+- `architecture.py` exposing `build_model(ctx)` that returns a `torch.nn.Module`;
+- `training.py` exposing `train(ctx)` that owns the training loop.
 
-The optional `prism.yaml` manifest tells PRISM which files belong to the architecture component and which files belong to the training component.
+An optional `prism.yaml` can declare the entrypoints and the chosen tokenizer. A single combined
+module no longer satisfies the contract.
 
-## Why Split Architecture and Training?
+## Why The Miner Owns The Loop But Not The Score
 
-A strong model result can come from two different discoveries:
+The miner owns the model and the training procedure, including multi-GPU scaling. The challenge owns
+everything that makes the comparison fair and cheat-resistant:
 
-1. A genuinely useful architecture family.
-2. Better training, loss, optimizer, or inference code for that architecture.
+- the dataset content and the secret `val`/`test` splits;
+- the forced random seed and deterministic flags;
+- the data order and the single-pass online-loss capture;
+- the scoring.
 
-PRISM tracks those separately. The first miner to discover a meaningful architecture family can keep architecture ownership, while another miner can still earn rewards by improving how that architecture is trained or used.
+Any metric the miner reports and any manifest the miner writes are ignored. Scoring always reads the
+challenge-authored `prism_run_manifest.v2.json`.
 
 ## Evaluation Philosophy
 
-PRISM evaluations are intentionally small but structured:
+PRISM evaluations are intentionally compact but honest:
 
-- enough training steps to detect learning behavior;
-- controlled resource limits;
-- repeated metrics support;
-- architecture and recipe scores;
-- hook usage metrics for optimizer, inference, loss, and training-step code;
-- scaling-law signals across loss smoothness, gradient stability, activation behavior, model size, depth, sequence length, and batch growth;
-- dynamic thresholds to filter out noise.
+- forced random initialization (fixed seed) so smuggled pretrained weights are inert;
+- single-pass, predict-then-train online loss so there is no held-out leakage by construction;
+- a metric that integrates the whole loss curve, so single-checkpoint gaming fails;
+- compute normalization (tokens and FLOPs, never wall-clock) so a faster GPU does not buy a better score;
+- a secret held-out split used only by the challenge scorer for the tie-breaker and the
+  anti-memorization gap.
 
-The result is a practical decentralized research loop for finding ideas that may be worth testing at larger scale.
+## Signals That Matter
 
-## Signals That Matter for Scaling
+The primary signal is the prequential bits-per-byte: the area under the from-scratch online loss
+curve, normalized by the raw UTF-8 bytes consumed. A model that learns faster compresses better and
+ranks higher. The held-out delta-over-random-init breaks near-ties, and an excessive
+train-vs-held-out gap flags memorization and penalizes the score.
 
-PRISM is explicitly designed to reduce the risk of rewarding ideas that only look good at tiny scale. Poor predictors include:
-
-- early benchmark scores such as small-run MMLU proxies;
-- subjective chat quality;
-- final perplexity alone;
-- a single seed;
-- extremely short training runs without extrapolation.
-
-Better predictors include:
-
-- smooth loss curves with no oscillation;
-- stable gradient norms;
-- no activation spikes;
-- consistent improvement across model sizes;
-- depth-scaling behavior;
-- sequence-scaling behavior;
-- batch-scaling behavior and gradient-noise stability.
-
-See [Scaling Evaluation](scaling.md) for the full policy.
+See [Scaling Evaluation](scaling.md) for the multi-GPU contract and the budget model, and
+[Scoring and rewards](scoring.md) for the scoring math.

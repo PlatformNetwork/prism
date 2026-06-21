@@ -1,19 +1,13 @@
 # Security Model
 
-PRISM evaluates untrusted miner code. Its security model assumes submissions may be malicious and separates identity verification, static review, LLM policy review, duplicate review, and execution isolation.
+PRISM evaluates untrusted miner code. Its security model assumes submissions may be malicious and
+layers identity verification, a static AST sandbox, an OpenRouter LLM hard gate, a duplicate check,
+and a forced-init re-execution that makes the common cheats inert rather than merely detected.
 
 ## Identity and Upload Security
 
-Miner-facing uploads are handled by Platform. Platform verifies:
-
-* hotkey identity
-* signatures
-* timestamps
-* nonces
-* request freshness
-* challenge routing
-
-After verification, Platform forwards the payload to PRISM through:
+Miner-facing uploads are handled by Platform, which verifies hotkey identity, signatures, timestamps,
+nonces, request freshness, and challenge routing before forwarding the payload to PRISM:
 
 ```text
 POST /internal/v1/bridge/submissions
@@ -29,105 +23,99 @@ Internal endpoints require the shared Platform challenge token:
 Authorization: Bearer <shared-token>
 ```
 
-The token is read from `PRISM_SHARED_TOKEN`, `CHALLENGE_SHARED_TOKEN`, or a configured secret file. Production configs should use secret files instead of inline values.
+The token is read from `PRISM_SHARED_TOKEN`, `CHALLENGE_SHARED_TOKEN`, or a configured secret file.
+Production configs should use secret files instead of inline values.
 
-## Static Review
+## Static Sandbox
 
-Before evaluation, PRISM inspects Python code for:
+Before any GPU work, PRISM runs the static gates over both submission scripts, in order:
 
-* forbidden imports
-* forbidden calls
-* unsafe attributes
-* invalid top-level code
-* missing contract functions
-* unsupported project structure
+1. **AST hard-blocks** over `architecture.py` and `training.py`: no `os`, `sys`, `subprocess`,
+   `socket`, network clients, `pickle`/`torch.load` of untrusted paths, `ctypes`, dynamic
+   `importlib`, `eval`/`exec`/`compile`, attribute escapes (`__globals__`, `__reduce__`,
+   `__class__` walking), or filesystem writes outside `artifacts_dir`.
+2. **Forced-seed parameter cap**: the challenge instantiates `build_model(ctx)` under the forced seed
+   in a bounded child process and rejects a model over the 150M parameter cap (counting realized,
+   first-forward shapes) before any GPU work.
+3. **Multi-GPU static contract**: the training script must use the distributed primitives and a
+   rank-0 write guard, and a `gpu_count > 8` or multi-node request is rejected.
 
-The review is applied to all Python files in the submitted project. The entrypoint must satisfy the model contract, while helper files may be contract-free but still pass safety checks.
+A rejection at any static gate is terminal and skips the LLM review entirely.
 
-## Evidence-Gated LLM Policy Review
+## Forced-Init Re-Execution (Anti-Cheat Core)
 
-PRISM's LLM review flow is evidence-gated. The reviewer must call `submit_mermaid` before `submit_verdict`. A verdict before Mermaid evidence is rejected as an ordering error.
+The challenge re-executes the miner's `training.py` under a **forced random init** with a fixed,
+challenge-controlled seed and deterministic flags set **before** any miner code runs. It feeds the
+model fresh, single-pass batches from the locked train split in a challenge-controlled order and
+records the online loss itself. This neutralizes the three cheat classes:
 
-LLM rejection requires deterministic evidence. When the LLM is suspicious but does not provide deterministic evidence, PRISM records quarantine or hold audit state instead of treating suspicion as a final rejection. This policy is controlled by `llm_review_policy.evidence_required_for_rejection`, which defaults to `true`.
+- **No pretrained weights**: forced random init makes smuggled weights inert; an impossibly low
+  step-0 loss is flagged as an anomaly and zeroes the score; the container runs `network=none` and
+  the sandbox blocks IO/network/deserialization escapes.
+- **No metric manipulation**: the challenge computes the metric from the loss stream it captured, so
+  any miner-reported number and any miner-written manifest are ignored. The fixed seed and data order
+  make runs reproducible (same submission + same seed + same data yields the same score within
+  tolerance).
+- **No memorization**: the `val`/`test` splits are secret and **never exposed** to the miner script;
+  an excessive train-vs-held-out gap penalizes the score.
 
-The evidence requirement is motivated by benchmark-contamination and model-security literature. **Rethinking Benchmark and Contamination for Language Models with Rephrased Samples** (Yang et al., 2023) shows that public benchmark overlap can survive simple string matching and can make suspiciously high scores ambiguous. **BadNets: Identifying Vulnerabilities in the Machine Learning Model Supply Chain** (Gu, Dolan-Gavitt, and Garg, 2017/2019) shows that models can preserve malicious trigger behavior while passing normal validation. PRISM therefore requires concrete, reproducible evidence before a review can reject a miner submission for malicious or dishonest behavior.
+## OpenRouter LLM Hard Gate
 
-The default review intent is to catch code that attempts:
+After the static gates pass, a strong LLM reviews both scripts as a **hard gate**. The reviewer runs
+on OpenRouter with `openai/gpt-4o` by default, using the key from the Docker secret mounted at
+`/run/secrets/openrouter_api_key`. It checks architecture-to-training coherence, cheating and
+obfuscation (smuggled weights, hidden network, dead/no-op loops, metric gaming), and dangerous
+operations the static sandbox might miss.
 
-* secret exfiltration
-* filesystem or process escape
-* network escape
-* hidden behavior unrelated to the model contract
-* plagiarism or copied miner code
-* unsupported metric or calculation claims, including suspicious shortcuts that conflict with artifacts, logs, manifests, dataset fingerprints, FLOPs, tokens, or parameter counts
+The verdict is parsed as structured JSON. A `reject` is terminal: the pipeline stops **before any GPU
+work**, and the submission ends `rejected`. A transient error or an ambiguous result fails closed to
+a held quarantine rather than silently allowing. The gate is enabled by default; only a
+configuration-disabled gate is skipped.
 
-LLM review can inspect metric calculation claims and compare them with submitted evidence, but it is not proof that every score is correct. The reviewer may flag inconsistencies between artifacts, run logs, manifests, dataset fingerprints, FLOPs, tokens, parameter counts, and reported metrics. Rejection still requires deterministic evidence.
+## Locked Data, No Network
 
-LLM review does not replace deterministic manifest validation. Manifest validation remains the primary mechanical gate for internal consistency, official scoring readiness, and checks such as matching parameter counts, tokens, FLOPs, GPU counts, and architecture graph hashes. PRISM does not rely on LLM review alone and does not claim to recompute every metric from raw artifacts during this policy step.
+The dataset is a pinned FineWeb-Edu subset. The train split is mounted **read-only** at `ctx.data_dir`
+and is the only data the miner script can see; the `val`/`test` splits are secret. The eval container
+runs with `network=none`, `HF_HUB_OFFLINE=1`, and `HF_DATASETS_OFFLINE=1`, so there is **no network**
+during training. The miner cannot download data, tokenizers, or weights at runtime.
 
-## Plagiarism, Similarity, and Quarantine
+## Duplicate Review
 
-PRISM stores source snapshots and can compare submissions against prior code and canonical architecture graphs. Deterministic duplicate reports may produce these outcomes:
-
-| Outcome | Meaning |
-| --- | --- |
-| `reject` | Exact source duplicate or deterministic policy violation. |
-| `attach` | Same architecture graph with source changes that attach as an implementation variant. |
-| `quarantine` | Suspicious similarity or ambiguous graph match needing review. |
-| `allow` | No blocking similarity found. |
-
-Quarantine is suspicion-only protection. It prevents a questionable submission from affecting ownership or weights until review resolves it.
+PRISM stores source snapshots and runs a deterministic duplicate check. An exact-source-hash
+duplicate is rejected, and a borderline-similarity quarantine is folded into a terminal rejection at
+ingress (there is no operator hold-resolution surface; the v1-NAS component-review and ownership
+machinery was decommissioned).
 
 ## ZIP Hardening
 
-ZIP extraction rejects:
-
-* symlinks
-* path traversal
-* unsafe paths
-* unsupported file types
-* excessive file count
-* excessive total bytes
-
-This prevents archive-level attacks before code review begins.
+ZIP extraction rejects symlinks, path traversal, unsafe paths, unsupported file types, and excessive
+file counts or total bytes, before code review begins.
 
 ## Execution Isolation
 
-PRISM does not execute submitted code inside the API or worker process. Evaluation happens in containers through the Platform Docker broker for GPU paths. Local CPU smoke runs are non-scoring wiring checks.
+PRISM does not execute submitted code inside the API or worker process. The scored run happens in a
+broker-backed container that is non-root, has a read-only rootfs except `artifacts_dir`, uses
+`network=none` and `no-new-privileges`, and is bounded by CPU, memory, PID, and wall-clock caps. The
+host-side static instantiation and held-out scoring run in bounded child processes and use
+`weights_only=True` for any deserialization.
 
-Container limits include:
+## Dry-Run Weights
 
-* CPU quota
-* memory and swap limits
-* PID limits
-* network policy
-* read-only runtime option
-* optional GPU type and count
+Weights are normalized per hotkey from the bits-per-byte `final_score` and exposed only via
+`get_weights`. They are always **dry-run** and are never written on-chain.
 
-Official score-eligible GPU jobs use the fixed official GPU profile from SQL runtime config or defaults, with a maximum of 8 GPUs. Autosplit is for non-scoring or development paths only. PRISM sends the actual lease size as `gpu_count`: `None` or omitted means CPU-only, while a positive integer requests GPUs. Platform owns `gpu_resource_name` and maps the count to Kubernetes `resources.limits['nvidia.com/gpu']` by default. PRISM does not pass `gpu_resource_name`; device IDs remain metadata for logs and manifests, not Kubernetes placement semantics. Network isolation depends on the cluster CNI and the NetworkPolicy enforcement configured by Platform and the operator.
-
-## Checkpoint Workspace Security
-
-Checkpoint hooks write only inside an evaluator-owned checkpoint workspace. PRISM rejects absolute paths, `..` traversal, symlinks, and any checkpoint path outside that workspace. The checkpoint workspace cap is decimal 10G, exactly `10_000_000_000` bytes.
-
-Evaluator resume in v1 is retry-only after eligible infrastructure or eviction failures, with validated same submission, code, architecture, and recipe lineage. It is not used for sandbox failures, miner code failures, scoring failures, or policy failures. Miners cannot select arbitrary external checkpoint paths or resume sources, and PRISM does not support object-store or cloud checkpoint upload in this contract.
-
-Distributed execution is single-node only in v1. PRISM launches 1-8 GPU container runs with single-node torchrun, including `torchrun --standalone --nnodes=1 --nproc-per-node=1` for a 1 GPU run. PRISM does not support multi-node distributed training.
-
-## Scientific Security References
+## Reference Studies
 
 | Area | Study | PRISM implication |
 | --- | --- | --- |
-| Supply-chain attacks | Gu, Dolan-Gavitt, and Garg, 2017/2019, *BadNets* | Treat submitted code and artifacts as adversarial even when validation metrics look normal. |
-| Benchmark contamination | Yang et al., 2023, *Rethinking Benchmark and Contamination for Language Models with Rephrased Samples* | Do not treat anomalous public benchmark scores as sufficient evidence without contamination analysis. |
-| Model documentation | Mitchell et al., 2019, *Model Cards for Model Reporting* | Require structured model/run metadata for evaluator artifacts. |
-| Dataset documentation | Gebru et al., 2018/2021, *Datasheets for Datasets* | Track dataset provenance, transformations, and intended use. |
-| Long-context evaluation limits | Liu et al., 2023, *Lost in the Middle*; Hsieh et al., 2024, *RULER* | Use long-context benchmarks as controlled evidence, not as a single safety verdict. |
+| Supply-chain attacks | Gu, Dolan-Gavitt, and Garg, 2017/2019, *BadNets* | Treat submitted code and artifacts as adversarial even when metrics look normal. |
+| Untrusted deserialization | Common pickle/`torch.load` RCE guidance | Load any host-side artifact with `weights_only=True` and only the challenge-recorded path. |
+| Dataset provenance | Penedo et al., 2024, *The FineWeb Datasets* | Pin the data revision and shard hashes; keep held-out splits secret. |
 
 ## Operational Guidance
 
 * Use real secret files in production, not inline tokens.
 * Keep public submissions disabled when PRISM is deployed only behind Platform.
-* Run broker-backed GPU evaluation for official GPU paths.
-* Enable LLM review for production subnet operation when policy requires it.
-* Monitor rejected, quarantined, held, and failed submissions separately.
+* Keep the eval container on `network=none` and the rootfs read-only except `artifacts_dir`.
+* Keep the OpenRouter LLM hard gate enabled for production operation.
+* Monitor rejected, held, failed, and completed submissions separately.

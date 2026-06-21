@@ -2,7 +2,7 @@
 
 # PRISM
 
-**Decentralized neural architecture search for frontier-model research**
+**An "ability to learn" ML challenge: two-script submissions, locked data, challenge-owned scoring**
 
 **[Overview](docs/overview.md) • [Miner Guide](docs/miner/README.md) • [Validator Guide](docs/validator/README.md) • [Architecture](docs/architecture.md) • [Scoring](docs/scoring.md) • [Security](docs/security.md)**
 
@@ -18,43 +18,61 @@
 
 ## Overview
 
-PRISM is a Platform subnet for **decentralized neural architecture search**. Miners submit model
-architecture and training ideas, PRISM evaluates them in isolated benchmark environments, and the
-subnet rewards ideas that show better architecture quality, training behavior, and scaling signals.
+PRISM is a Platform subnet that measures a model's **ability to learn** from scratch. Miners submit
+two scripts: a model `architecture.py` and a custom `training.py` loop. The challenge owns the
+dataset (locked FineWeb-Edu raw text, mounted read-only, no network) and the evaluation. The
+validator **re-executes** the miner's training loop under a **forced random initialization** (fixed
+seed) and **computes the score itself**, ignoring anything the miner reports.
 
-The goal is not to train frontier models directly inside the subnet. Instead, PRISM searches the
-design space around frontier-model building blocks using compact evaluations that are fast enough
-for subnet operation while still surfacing useful architecture, optimizer, loss, inference, and
-scaling-law signals.
+The score is a prequential (online) compression metric in **bits-per-byte (bpb)**: the area under
+the from-scratch loss curve, normalized by the raw bytes of text consumed. A model that learns
+faster compresses the stream better and earns a better score. This is robust by construction:
+because the validator forces random init, smuggled pretrained weights are inert; because each token
+is scored before it is trained on, there is no held-out leakage; and because the metric integrates
+the whole curve, single-checkpoint gaming fails.
 
 ## What The Subnet Does
 
-1. Miners submit architecture or training variants.
-2. PRISM validates the submission contract and reviews the bundle for safety.
-3. The evaluator measures proxy learning quality, training behavior, stability, and scaling signals.
-4. Architecture ownership and training ownership are attributed separately.
-5. Meaningful improvements receive component rewards.
-6. Final architecture and recipe scores are converted into raw Platform weights.
+1. A miner submits a two-script bundle (`architecture.py` + `training.py`).
+2. PRISM validates the two-script contract and runs the static AST sandbox.
+3. A strong **OpenRouter** LLM reviews both scripts as a hard gate and can reject before any GPU work.
+4. The validator re-executes the training loop on a GPU under a forced random init on the locked
+   FineWeb-Edu train split.
+5. The challenge computes the prequential bits-per-byte score plus a held-out delta tie-breaker.
+6. Scores rank on the leaderboard and convert into normalized, **dry-run** Platform weights.
 
-## What PRISM Rewards
+## The v2 System At A Glance
 
-- **Architecture discovery**: first discovery of a meaningful architecture family, including a never-before-seen family, earns architecture ownership.
-- **Training and inference improvement**: later miners can improve optimizer setup, inference logits, loss computation, or train-step code for an existing architecture and earn training ownership.
-- **Noise-resistant improvements**: dynamic thresholds and noise checks prevent tiny random metric changes from stealing rewards.
-- **Scaling-aware signals**: PRISM emphasizes smooth loss curves, stable gradients, activation stability, and consistent improvements across model size, depth, sequence length, and batch scaling.
-- **Secure execution**: submitted code is reviewed statically and by optional LLM policy checks, then executed only inside isolated containers through the Platform Docker broker.
+- **Two-script submission contract**: `architecture.py` exposes `build_model(ctx)`; `training.py`
+  exposes `train(ctx)`. The miner owns the training loop; the challenge owns the data and the score.
+  A single combined module no longer satisfies the contract.
+- **Locked FineWeb-Edu data plane**: a pinned FineWeb-Edu subset, split into `train` (miner-visible)
+  and secret `val`/`test`, bind-mounted read-only with `network=none` and `HF_HUB_OFFLINE=1`.
+- **Forced-init re-execution**: the challenge runner forces the seed and deterministic flags before
+  importing the miner code, then launches `torchrun --standalone --nnodes=1 --nproc-per-node=1`.
+- **Prequential bits-per-byte scoring**: the primary, tokenizer-agnostic, compute-normalized metric,
+  with a held-out delta-over-random-init tie-breaker and an anti-memorization gap penalty.
+- **OpenRouter LLM hard gate**: `openai/gpt-4o` reviews both scripts; a `reject` is terminal.
+- **Single-node multi-GPU contract**: the miner's loop scales across 1-8 GPUs; the scored run uses
+  `nproc=1` (one physical GPU); correctness is validated with static checks and a gloo multi-rank test.
+- **Dry-run weights**: weights are normalized and exposed via `get_weights`; they are never written
+  on-chain.
 
 ---
 
 ## Submission Scope
 
-PRISM fixes the dataset and evaluation protocol, not the architecture search space. Miners may submit never-before-seen architecture families through the `build_model(ctx)` contract, while PRISM compares them under shared scoring and scaling rules.
+PRISM fixes the dataset and the evaluation protocol, not the model search space. A miner may submit
+any valid `torch.nn.Module` through `architecture.py::build_model(ctx)` and any training procedure
+through `training.py::train(ctx)`, subject to the AST sandbox, the 150M parameter cap, and the
+resource limits.
 
-Training code is also first-class. Miners can customize optimizer, loss, inference, and train-step behavior with hooks such as `configure_optimizer`, `compute_loss`, `inference_logits`, and `train_step`. Full optimizer and LR control belongs in `configure_optimizer`; fallback evaluator paths may apply safe defaults or caps when a submission relies only on recipe fields.
+The challenge re-executes that loop on the locked FineWeb-Edu train split under a forced random init
+and records the online loss stream itself. Any metric the miner logs or any manifest the miner writes
+is ignored: scoring always reads the **challenge-authored** `prism_run_manifest.v2.json`.
 
-Official proxy and full-scale evaluation modes use FineWeb-Edu dataset contracts. Metric claims must be backed by `prism_run_manifest.v1.json` artifacts, including dataset fingerprints, score eligibility flags, loss comparability metadata, diagnostics, benchmark metadata, and artifact references. Manifest validation is deterministic, but PRISM does not claim to recompute every submitted metric from raw artifacts.
-
-For the scientific scoring basis, see [Scoring and rewards](docs/scoring.md) and [Scaling evaluation](docs/scaling.md). For evidence-gated metric and anti-cheat review, see the [Security model](docs/security.md). LLM policy review can flag and explain risk, but rejection requires concrete evidence under that policy.
+For the scoring basis, see [Scoring and rewards](docs/scoring.md) and [Scaling evaluation](docs/scaling.md).
+For the sandbox, LLM gate, and anti-cheat model, see the [Security model](docs/security.md).
 
 ---
 
@@ -77,12 +95,12 @@ For the scientific scoring basis, see [Scoring and rewards](docs/scoring.md) and
 flowchart LR
     Miner[Miner] --> Platform[Platform]
     Platform --> Prism[PRISM]
-    Prism --> Review[Review]
-    Review --> Broker[Docker Broker]
-    Broker --> GPU[GPU Eval]
-    GPU --> Scale[Scaling Signals]
-    Scale --> Scores[Scores]
-    Scores --> Weights[Weights]
+    Prism --> Static[Static Sandbox]
+    Static --> LLM[OpenRouter Hard Gate]
+    LLM --> Broker[Docker Broker]
+    Broker --> Reexec[Forced-Init Re-Execution]
+    Reexec --> Score[Prequential bpb + Held-out Delta]
+    Score --> Weights[Dry-Run Weights]
 ```
 
 ```mermaid
@@ -92,30 +110,33 @@ sequenceDiagram
     participant R as PRISM
     participant D as Docker
     participant W as Weights
-    M->>P: signed ZIP upload
+    M->>P: signed two-script bundle upload
     P->>R: verified hotkey submission
-    R->>R: static and LLM review
-    R->>D: isolated GPU evaluation
-    D-->>R: q_arch, q_recipe, hook, stability metrics
-    R->>R: scaling-aware attribution
-    R->>W: split component rewards
+    R->>R: AST sandbox + param cap + distributed contract
+    R->>R: OpenRouter LLM hard gate (allow/reject)
+    R->>D: forced-init GPU re-execution on locked data
+    D-->>R: challenge-captured online loss stream
+    R->>R: prequential bits-per-byte + held-out delta
+    R->>W: normalized dry-run weights
 ```
 
 ---
 
-## Scaling-Law Evaluation Philosophy
+## Anti-Cheat By Construction
 
-PRISM is designed to avoid rewarding signals that often fail at scale. Weak predictors include early MMLU-style benchmarks, subjective chat quality, final perplexity alone, single-seed results, and very short training runs without extrapolation.
+PRISM is designed so the common cheats are inert rather than merely detected:
 
-The strongest proxy signals are:
+- **No pretrained weights**: the validator forces random init, so smuggled weights produce an
+  anomalous step-0 loss that zeroes the score; the container runs `network=none` and the sandbox
+  blocks IO/network/deserialization escapes.
+- **No metric manipulation**: the challenge re-executes and computes the metric itself from the
+  online loss it captured; miner-reported numbers and miner-written manifests are ignored.
+- **No memorization**: the `val`/`test` splits are secret and never exposed to the miner; an
+  excessive train-vs-held-out gap penalizes the score.
+- **Determinism**: fixed seeds, deterministic algorithms, and a challenge-controlled data order make
+  the same submission reproduce the same score within tolerance.
 
-- smooth loss curves without oscillation;
-- stable gradient norms without silent explosion;
-- absence of activation spikes, especially for paths that could scale beyond 10B parameters;
-- coherent improvements across model sizes, such as similar gains at 125M, 350M, and 1B proxy scales;
-- depth, sequence, and batch scaling tests that expose residual-stream drift, MoE routing collapse, KV-cache degradation, normalization failures, overflow, NaNs, and gradient-noise problems.
-
-See [Scaling Evaluation](docs/scaling.md) for the complete scaling policy.
+See [Security model](docs/security.md) for the full anti-cheat and sandbox policy.
 
 ---
 
@@ -125,11 +146,15 @@ See [Scaling Evaluation](docs/scaling.md) for the complete scaling policy.
 prism/
   assets/                     # README and documentation images
   docs/                       # Project documentation
+  scripts/                    # One-time data + tokenizer prep CLIs and a local staging driver
   src/prism_challenge/        # Challenge app, repository, evaluator, and SDK helpers
   src/prism_challenge/evaluator/
-    components.py             # Architecture/training manifest parsing and fingerprints
-    container.py              # Isolated evaluation runner
-  tests/                      # API, scoring, broker, executor, and safety tests
+    components.py             # Two-script contract resolution and fingerprints
+    container.py             # Forced-init re-execution runner (challenge-owned)
+    dataset.py               # Locked FineWeb-Edu loader (pinned splits + MANIFEST)
+    scoring.py               # Prequential bits-per-byte + held-out delta scoring
+    llm_review.py            # OpenRouter LLM hard gate
+  tests/                      # Sandbox, scoring, harness, dataset, anti-cheat, and doc tests
   config.example.yaml         # Production-oriented example config
   Dockerfile                  # Challenge image
 ```

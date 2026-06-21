@@ -2,115 +2,107 @@
 
 ## Purpose
 
-PRISM rewards miners for discovering model architectures and training variants that show useful learning, stability, and scaling behavior. Your submission can introduce a new architecture family, improve training for an existing family, or do both in one full submission. PRISM fixes the FineWeb-Edu dataset and evaluation protocol, not the miner architecture search space.
+PRISM rewards miners whose models learn fast from scratch. You submit two scripts, a model
+`architecture.py` and a custom `training.py` loop; the challenge re-executes your loop under a forced
+random initialization on locked FineWeb-Edu data and scores it with a prequential bits-per-byte
+metric. PRISM fixes the dataset and the evaluation, not your model search space.
 
 ## Miner Flow
 
-1. Decide whether you are submitting `full`, `architecture_only`, or `training_for_arch` work.
-2. Build a project bundle that follows the PRISM contract.
-3. Sign and submit the bundle with your miner hotkey.
-4. Track evaluation status and leaderboard movement.
-5. Inspect whether rewards were attributed to architecture ownership, training ownership, or both.
-6. Submit improved variants only when they provide meaningful, scalable gains.
+1. Build a two-script bundle that follows the PRISM contract.
+2. Sign and submit the bundle with your miner hotkey.
+3. PRISM runs the static sandbox and the OpenRouter LLM hard gate.
+4. The validator re-executes your `training.py` under a forced random init on the locked train split.
+5. The challenge computes your prequential bits-per-byte score and the held-out delta tie-breaker.
+6. Track your leaderboard rank; better learners earn more normalized, dry-run weight.
 
-## Submission Kinds
+## The Two-Script Contract
 
-| Kind | Use case |
-| --- | --- |
-| `full` | Submit a new architecture and its training or inference code. |
-| `architecture_only` | Submit a model architecture without claiming a training variant. |
-| `training_for_arch` | Improve optimizer, loss, inference, or train-step behavior for an existing architecture family. |
-
-Training-only submissions must point to the target architecture family. A `training_for_arch` submission cannot silently change architecture family or replace the target model under a training claim.
-
-## Project Manifest
-
-ZIP projects can include `prism.yaml` or `prism.yml` at the root:
+A bundle is a `.zip` (or directory) with two distinct scripts. An optional `prism.yaml` can declare
+the entrypoints and the chosen tokenizer:
 
 ```yaml
-kind: full
 architecture:
-  entrypoint: src/model.py
+  entrypoint: architecture.py
 training:
-  entrypoint: src/train.py
+  entrypoint: training.py
+tokenizer: gpt2
 ```
 
-The architecture entrypoint must expose:
+`architecture.py` exposes the model factory:
 
 ```python
 def build_model(ctx):
     return MyModel(ctx.vocab_size)
-
-def get_recipe(ctx):
-    return TrainingRecipe(learning_rate=3e-4, batch_size=2)
 ```
 
-`build_model(ctx)` can return any valid `torch.nn.Module` that fits the sandbox and resource limits. `get_recipe(ctx)` declares recipe metadata and defaults, including learning rate and batch size. It is not the only place to control optimization.
+`build_model(ctx)` can return any valid `torch.nn.Module` that fits the AST sandbox, the 150M
+parameter cap, and the resource limits. It must not read data, open files, touch the network, or
+reference the dataset.
 
-Optional hooks can claim training or inference improvements:
+`training.py` exposes the training loop you own:
 
 ```python
-def configure_optimizer(model, recipe, ctx):
-    ...
+from architecture import build_model
 
-def inference_logits(model, batch, ctx):
-    ...
-
-def compute_loss(model, batch, ctx):
-    ...
-
-def train_step(model, batch, optimizer, ctx):
-    ...
-
-def save_checkpoint(model, checkpoint_dir, ctx):
-    ...
-
-def load_checkpoint(model, checkpoint_dir, ctx):
+def train(ctx):
+    model = build_model(ctx)
+    # build the optimizer/schedule, read the locked train split from ctx.data_dir,
+    # tokenize, run the loop, handle multi-GPU, and write only under ctx.artifacts_dir.
     ...
 ```
 
-`configure_optimizer` gives full optimizer and LR control. Use it for custom optimizers, parameter groups, schedulers, or learning rates that should not be reduced to evaluator fallback choices. Without that hook, the fallback optimizer may apply safe evaluator defaults/caps, including learning-rate caps.
-
-`train_step` can implement a fully custom update step. Use it when you need a training loop other than the evaluator default. It must return a loss tensor and stay within sandbox and resource limits. PRISM launches 1-8 GPU container runs with single-node torchrun, including `torchrun --standalone --nnodes=1 --nproc-per-node=1` for a 1 GPU run. When PRISM wraps default multi-process training with DDP, a custom `train_step` that bypasses the default loop must be DDP-safe and rank-aware.
-
-Use `save_checkpoint(model, checkpoint_dir, ctx)` and `load_checkpoint(model, checkpoint_dir, ctx)` only for model state inside the evaluator-provided checkpoint workspace. The checkpoint fields on `ctx` are `checkpoint_dir`, `resume_checkpoint_dir`, `checkpoint_api_version`, `attempt`, `is_resume`, `rank`, `local_rank`, `world_size`, `distributed_backend`, `device`, and `checkpoint_metadata`. `save_checkpoint` may return `None`, a checkpoint-dir-relative `str`, or the exact shape `{"path": str, "metadata": dict[str, object]}`. Return `None` only when no checkpoint artifact should be recorded; return a checkpoint-dir-relative `str` or the exact dict shape when PRISM should accept and record a produced checkpoint artifact. PRISM records accepted checkpoint artifacts through manifest paths under the run artifact root. External checkpoint paths and miner-selected resume sources are not supported. The workspace cap is decimal 10G, exactly `10_000_000_000` bytes.
-
-Evaluator resume in v1 is retry-only after eligible infrastructure or eviction failures. It does not resume sandbox failures, miner code failures, scoring failures, or policy failures.
-
-## Artifact Manifest
-
-Evaluators write `prism_run_manifest.v1.json`. It includes `architecture_graph.json`, `architecture_metadata.v1.json`, run logs, optional metrics artifacts, dataset fingerprints, GPU counts, diagnostics, loss comparability fields, benchmark metadata, and score eligibility flags. Submitted metrics are not free-form claims. They must come from artifacts, evaluator logs, and manifest fields that validators can check.
-
-Do not try to make Mermaid text the canonical architecture identity. PRISM derives Mermaid from the canonical graph for review and display.
+`train(ctx)` owns the optimizer, the schedule, the dataloading from the read-only locked train split,
+the tokenization, the multi-GPU strategy, and the loop. The single-module re-export idiom no longer
+satisfies the contract: architecture and training must be two distinct files.
 
 ## Context And Limits
 
-`ctx` exposes the metadata and limits needed to build a valid model:
+`ctx` is a `PrismContext` that supplies the metadata and limits you need:
 
-* vocabulary size
-* sequence length
-* maximum layers
-* maximum parameters
-* deterministic seed
-* evaluation budget metadata
+* `vocab_size` and `max_seq_len` for token-id geometry;
+* `max_params` (150M cap);
+* `seed`, the forced seed you cannot change;
+* `data_dir`, the read-only path to the locked FineWeb-Edu **train** split;
+* `artifacts_dir`, the only writable path;
+* `world_size`, `rank`, `local_rank`, `device` for the distributed launch;
+* `token_budget` / `step_budget` for the compute budget;
+* `ctx.build_model()` and `ctx.reference_tokenizer("gpt2" | "llama")` (offline, no network).
 
-PRISM supplies and controls the dataset through FineWeb-Edu fixtures or official FineWeb-Edu evaluation data. Miners provide model code, training logic, and required metrics/artifacts, not their own dataset.
+PRISM supplies and controls the dataset. You provide model code and a training loop, not your own
+data. Read raw text from `ctx.data_dir` and tokenize with your own tokenizer or a pre-staged
+reference. Fail closed if the locked data is missing rather than fabricating data.
 
-Avoid hard-coding one tensor shape, batch size, sequence length, or parameter budget. PRISM tests whether the idea can survive scaling probes, not whether it wins one tiny run.
+## Locked Data, No Network
 
-## Local Smoke Check
+The train split is exposed read-only at `ctx.data_dir`; the `val`/`test` splits are secret and never
+exposed to your script. The eval container runs with `network=none`, `HF_HUB_OFFLINE=1`, and
+`HF_DATASETS_OFFLINE=1`, so there is no network during training. Do not try to download data,
+tokenizers, or weights at runtime.
 
-Validators can run a local CPU smoke check for wiring:
+## Multi-GPU
 
-```bash
-pytest tests/test_local_cpu_smoke_eval.py -q
-```
+Your `training.py` owns multi-GPU scaling. The harness launches
+`torchrun --standalone --nnodes=1 --nproc-per-node=<gpu_count>` and exposes `WORLD_SIZE`, `RANK`, and
+`LOCAL_RANK`. PRISM is single-node: runs use 1-8 GPUs, and the official scored run uses
+`torchrun --standalone --nnodes=1 --nproc-per-node=1` (the `nproc=1` path). A correct loop calls
+`init_process_group`, wraps the model with DDP or FSDP, shards data per-rank, does rank-0-only
+writes, all-reduces metrics, and tears down the process group, and it must also work at
+`world_size=1`. Correctness is validated with a static contract check and a gloo multi-rank test.
 
-This command uses a tiny FineWeb-Edu fixture and sets `validation.score_eligible=false`. It does not run official full-scale training and does not create an official score.
+## The Challenge Computes The Score
+
+PRISM re-executes your loop under a forced random init, captures the single-pass online loss itself,
+and writes a challenge-authored `prism_run_manifest.v2.json`. Any value you report and any manifest
+you write are ignored. The score is the prequential bits-per-byte: the area under the from-scratch
+online loss curve, normalized by the raw UTF-8 bytes consumed, with a held-out delta-over-random-init
+tie-breaker. A smuggled pretrained model produces an anomalous step-0 loss and is zeroed; an excessive
+train-vs-held-out gap is penalized as memorization.
 
 ## Submitting Work
 
-Submit through the public submission route when public submissions are enabled:
+Submit through the public submission route when public submissions are enabled, or through the
+Platform proxy in production:
 
 ```http
 POST /v1/submissions
@@ -119,54 +111,36 @@ Content-Type: application/json
 
 ```json
 {
-  "hotkey": "5Abc...",
-  "signature": "<sr25519-signature>",
-  "timestamp": 1760000000,
-  "nonce": "unique-nonce",
-  "code": "<base64-or-text-submission-payload>"
+  "filename": "project.zip",
+  "code": "<base64 zip payload>",
+  "metadata": {}
 }
 ```
 
 Submission rules:
 
-* The miner hotkey must match the signature.
-* Timestamps and nonces protect against replay.
+* The miner hotkey must match the signature; timestamps and nonces protect against replay.
 * Submissions must stay within the configured size limit.
-* Unsafe imports, network access, arbitrary filesystem access, and suspicious code paths can be rejected.
-* Suspicion without deterministic evidence can be quarantined or held for review.
+* Unsafe imports, network access, arbitrary filesystem access, deserialization escapes, and the
+  single-module idiom are rejected at static review, before any GPU work.
+* A `reject` from the OpenRouter LLM hard gate is terminal.
 
-## Scoring
+## What Improves Your Score
 
-Defaults are:
-
-| Score or pool | Default |
-| --- | ---: |
-| Final score blend | 70% architecture, 30% recipe |
-| Reward pools | 60% architecture ownership, 40% training ownership |
-
-SQL runtime config can override supported policy values. Official architecture scoring uses reference-recipe architecture signals, not raw final loss from a miner recipe. Training scoring uses architecture-normalized heldout improvement for the target family.
-
-## What Improves Scores
-
-Strong submissions should show:
-
-* smooth loss curves
-* stable gradient norms
-* absence of activation spikes
-* consistent improvements across model size and depth
-* stable sequence-length and batch-scaling behavior
-* useful training or inference hooks
-* original structure rather than small edits to another miner's work
+* A model that genuinely drives its from-scratch loss down fast (lower bits-per-byte is better).
+* A training loop that uses the compute budget efficiently (the score is compute-normalized, never
+  wall-clock).
+* A larger held-out delta-over-random-init on the secret val split (the near-tie tie-breaker).
+* A small train-vs-held-out gap (a large gap is penalized as memorization).
+* Correct, DDP-safe, rank-aware distributed behavior.
 
 ## Miner Checklist
 
 Before submitting:
 
-* Choose the right submission kind.
-* Include a valid manifest when using a multi-file project.
-* Keep architecture and training files organized.
-* Confirm required entrypoints exist.
-* Keep the code deterministic and resource-aware.
+* Ship two distinct scripts: `architecture.py` with `build_model(ctx)` and `training.py` with `train(ctx)`.
+* Keep `build_model` pure: no data, files, or network.
+* Read only `ctx.data_dir`; write only `ctx.artifacts_dir`.
+* Stay under the 150M parameter cap and inside the AST sandbox.
+* Make the loop deterministic under the forced seed and correct at `world_size=1`.
 * Remove secrets, private endpoints, generated caches, and unrelated files.
-* Avoid copying existing architecture or training structure.
-* Make scaling behavior part of the design.

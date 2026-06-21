@@ -1,23 +1,22 @@
 # Operator Guide
 
-This guide covers local validation and production-oriented configuration for running PRISM as a Platform challenge.
+This guide covers local validation and production-oriented configuration for running PRISM as a
+Platform challenge.
 
 ## Installation
 
 ```bash
 git clone https://github.com/PlatformNetwork/prism.git
 cd prism
-python -m venv .venv
-.venv/bin/python -m pip install -e ".[dev]"
+uv sync --frozen --extra dev
 ```
 
 ## Local Validation
 
 ```bash
-.venv/bin/ruff check src tests
-.venv/bin/ruff format --check src tests
-.venv/bin/mypy --config-file pyproject.toml src
-.venv/bin/pytest tests
+.venv/bin/ruff check src
+.venv/bin/mypy src/prism_challenge/evaluator
+.venv/bin/python -m pytest tests -q
 ```
 
 ## Required Runtime Configuration
@@ -34,107 +33,79 @@ The shared token must match the token configured in the Platform master for this
 
 ## Docker Broker Configuration
 
-Production evaluation should use the Platform Docker broker:
+Production evaluation uses the Platform Docker broker with the augmented evaluator image:
 
 ```bash
 PRISM_DOCKER_ENABLED=true
 PRISM_DOCKER_BACKEND=broker
 PRISM_DOCKER_BROKER_URL=http://platform-docker-broker:8082
 PRISM_DOCKER_BROKER_TOKEN_FILE=/run/secrets/platform/challenge_token
-PRISM_PLATFORM_EVAL_IMAGE=ghcr.io/platformnetwork/prism-evaluator:latest
+PRISM_PLATFORM_EVAL_IMAGE=ghcr.io/platformnetwork/prism-evaluator:augmented
 PRISM_PLATFORM_EVAL_GPU_COUNT=1
-```
-
-Useful limits:
-
-```bash
-PRISM_PLATFORM_EVAL_TIMEOUT_SECONDS=900
-PRISM_PLATFORM_EVAL_CPUS=2
-PRISM_PLATFORM_EVAL_MEMORY=8g
-PRISM_PLATFORM_EVAL_PIDS_LIMIT=512
 PRISM_DOCKER_NETWORK=none
 ```
 
-For broker-backed runs, PRISM sends only the official Platform SDK GPU field `gpu_count`. `gpu_count=None` or an omitted field is CPU-only; a positive integer is a GPU request. Platform owns `gpu_resource_name`, defaulting to `nvidia.com/gpu`, and Kubernetes broker mode maps positive counts to `resources.limits['nvidia.com/gpu']` unless Platform is configured with a different resource name. PRISM GPU device IDs are metadata for observability, not Kubernetes placement semantics. Single-GPU runs use `torchrun --standalone --nnodes=1 --nproc-per-node=1`; PRISM does not claim multi-node support.
+The scored run is single-node and uses `torchrun --standalone --nnodes=1 --nproc-per-node=1`. The
+evaluator image must ship `sentencepiece` and an offline tiktoken gpt2 cache so reference tokenizers
+load with no network.
 
-## Review Configuration
+## Locked FineWeb-Edu Data Plane
 
-Recommended production review settings:
+The broker bind-mounts the locked FineWeb-Edu data read-only into the eval container, which runs with
+`network=none`:
+
+```bash
+PRISM_PLATFORM_EVAL_DATA_DIR=/data/fineweb-edu/train       # miner-visible, read-only
+PRISM_PLATFORM_EVAL_VAL_DATA_DIR=/data/fineweb-edu/val     # secret; scorer-only, never mounted into eval
+PRISM_PLATFORM_EVAL_REFERENCE_TOKENIZER_DIR=/opt/reference-tokenizers
+```
+
+`HF_HUB_OFFLINE=1` and `HF_DATASETS_OFFLINE=1` are set inside the eval container. The `val`/`test`
+splits are secret and must never be exposed to a miner script.
+
+## Compute Budget
+
+The score is compute-normalized; wall-clock is only a safety cap, enforced in layers:
+
+```bash
+PRISM_PLATFORM_EVAL_BUDGET_SECONDS=1200            # graceful stop; score the partial stream
+PRISM_PLATFORM_EVAL_WATCHDOG_GRACE_SECONDS=120     # hard watchdog above the graceful budget
+PRISM_PLATFORM_EVAL_TIMEOUT_SECONDS=1800           # outer docker/broker backstop
+PRISM_PLATFORM_EVAL_ARTIFACTS_QUOTA_BYTES=2147483648
+```
+
+## LLM Hard Gate Configuration
+
+The OpenRouter LLM hard gate is enabled by default and reviews both scripts before any GPU work:
 
 ```bash
 PRISM_LLM_REVIEW_ENABLED=true
-PRISM_LLM_REVIEW_REQUIRED=true
-PRISM_PLAGIARISM_ENABLED=true
-```
-
-LLM review uses OpenRouter by default; override the wiring with:
-
-```bash
 PRISM_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 PRISM_OPENROUTER_MODEL=openai/gpt-4o
 PRISM_OPENROUTER_API_KEY_FILE=/run/secrets/openrouter_api_key
 ```
 
-## Component Reward Configuration
+A `reject` from the gate is terminal. The eval container carries no OpenRouter key (the gate runs
+host-side before the container is launched).
+
+## Multi-GPU Static Contract
 
 ```bash
-PRISM_COMPONENT_REWARDS_ENABLED=true
-PRISM_ARCHITECTURE_REWARD_WEIGHT=0.65
-PRISM_TRAINING_REWARD_WEIGHT=0.35
-PRISM_ARCHITECTURE_IMPROVEMENT_MIN_DELTA_ABS=0.01
-PRISM_TRAINING_IMPROVEMENT_MIN_DELTA_ABS=0.02
-PRISM_TRAINING_IMPROVEMENT_Z_SCORE=1.0
+PRISM_DISTRIBUTED_CONTRACT_POLICY=reject     # reject | flag | off
+PRISM_PLATFORM_EVAL_MAX_GPU_COUNT=8
 ```
 
-Architecture and training weights should usually sum to `1.0`.
+`reject` (the default) hard-rejects a non-distributed `training.py`; `flag` advances but logs; `off`
+skips the check.
 
-## Semantic Attribution Configuration
-
-The component agent protects ownership from useless diffs and low-confidence matches:
+## Duplicate Review
 
 ```bash
-PRISM_COMPONENT_AGENT_ENABLED=true
-PRISM_COMPONENT_AGENT_REQUIRED=false
-PRISM_COMPONENT_AGENT_MIN_CONFIDENCE=0.72
-PRISM_COMPONENT_AGENT_TRANSFER_CONFIDENCE=0.86
-PRISM_COMPONENT_AGENT_SAME_THRESHOLD=0.82
-PRISM_COMPONENT_AGENT_HOLD_THRESHOLD=0.55
-PRISM_COMPONENT_AGENT_CANDIDATE_TOP_K=5
-PRISM_COMPONENT_AGENT_MERMAID_ENABLED=true
-PRISM_COMPONENT_HOLD_LOW_CONFIDENCE=true
+PRISM_PLAGIARISM_ENABLED=true
 ```
 
-Recommended training current-best gates:
-
-```bash
-PRISM_TRAINING_TRANSFER_MIN_DELTA_ABS=0.05
-PRISM_TRAINING_TRANSFER_MIN_DELTA_REL=0.03
-```
-
-Low-confidence holds can be inspected and resolved with:
-
-```bash
-curl -H "Authorization: Bearer dev-secret" \
-  http://localhost:8000/internal/v1/component-review/holds
-```
-
-## Scaling-Signal Configuration
-
-Evaluator images should report stability and scaling metrics when available:
-
-- `loss_smoothness`
-- `loss_spike_count`
-- `grad_norm_mean`
-- `grad_norm_max`
-- `activation_spike_rate`
-- `scaling_consistency`
-- `depth_scaling_score`
-- `sequence_scaling_score`
-- `batch_scaling_score`
-- `nan_count`
-- `overflow_count`
-
-These metrics should complement `q_arch` and `q_recipe`; do not rely on final loss or a single benchmark alone.
+An exact-source-hash duplicate is rejected, and a borderline-similarity quarantine is folded into a
+terminal rejection at ingress. There is no operator hold-resolution surface.
 
 ## Running Locally
 
@@ -146,7 +117,9 @@ PRISM_DATABASE_URL=sqlite+aiosqlite:///./prism.sqlite3 \
 
 ## Platform Deployment
 
-In a Platform deployment, PRISM should be registered as a challenge image and reached by the master over the internal challenge network. Public miner traffic should go through the Platform proxy, which verifies signatures and forwards to PRISM.
+In a Platform deployment, PRISM registers as a challenge image reached by the master over the internal
+challenge network. Public miner traffic goes through the Platform proxy, which verifies signatures and
+forwards to PRISM. Weights are exposed only via `get_weights` and are always dry-run.
 
 ## Health Checks
 
@@ -168,8 +141,8 @@ curl -H "Authorization: Bearer dev-secret" \
 | Symptom | Likely cause |
 | --- | --- |
 | `invalid internal token` | Shared token mismatch between Platform and PRISM |
-| submission rejected before container | Static safety or contract validation failed |
-| evaluation failed | Broker, image, GPU, timeout, or container error |
-| empty weights | No completed component-scored submissions yet |
-| training variant not rewarded | Improvement did not pass dynamic threshold |
-| submission held | Component agent confidence was too low; resolve the review hold |
+| submission rejected before container | Static sandbox, two-script contract, param cap, distributed contract, or LLM hard-gate reject |
+| submission held | LLM review quarantine (transient error or ambiguous verdict) |
+| evaluation failed | Broker, image, GPU, timeout, missing locked data, or container error |
+| empty weights | No completed, scored submissions yet |
+| `missing_locked_data` | The read-only FineWeb-Edu train mount is absent or empty on the GPU node |
