@@ -6,7 +6,7 @@ Platform challenge.
 ## Installation
 
 ```bash
-git clone https://github.com/PlatformNetwork/prism.git
+git clone https://github.com/BaseIntelligence/prism.git
 cd prism
 uv sync --frozen --extra dev
 ```

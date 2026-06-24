@@ -6,7 +6,7 @@
 
 **[Overview](docs/overview.md) • [Miner Guide](docs/miner/README.md) • [Validator Guide](docs/validator/README.md) • [Architecture](docs/architecture.md) • [Scoring](docs/scoring.md) • [Security](docs/security.md)**
 
-[![License](https://img.shields.io/github/license/PlatformNetwork/prism)](https://github.com/PlatformNetwork/prism/blob/main/LICENSE)
+[![License](https://img.shields.io/github/license/PlatformNetwork/prism)](https://github.com/BaseIntelligence/prism/blob/main/LICENSE)
 [![Bittensor](https://img.shields.io/badge/Bittensor-subnet-black.svg)](https://bittensor.com/)
 [![Platform](https://img.shields.io/badge/Platform-Network-6f42c1.svg)](https://platform.network)
 

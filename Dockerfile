@@ -10,7 +10,7 @@
 # the previous single-image consumer (uvicorn app on port 8080).
 #
 # NOTE: every stage that runs `pip install .` MUST have `git` installed, because
-# pyproject.toml pulls `platform-network @ git+https://github.com/PlatformNetwork/platform.git`.
+# pyproject.toml pulls `platform-network @ git+https://github.com/BaseIntelligence/platform.git`.
 
 ############################################################
 # evaluator target — CUDA-capable image (cu128 series) that

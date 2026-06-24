@@ -7,7 +7,7 @@ dependencies = [
   "aiosqlite>=0.20",
   "fastapi>=0.115",
   "httpx>=0.27",
-  "platform-network @ git+https://github.com/PlatformNetwork/platform.git",
+  "platform-network @ git+https://github.com/BaseIntelligence/platform.git",
   "pydantic>=2.8",
   "pydantic-settings>=2.4",
   "PyYAML>=6.0",
