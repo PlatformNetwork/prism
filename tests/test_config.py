@@ -7,24 +7,24 @@ import yaml
 from prism_challenge.config import PrismSettings
 
 
-def test_platform_challenge_env_aliases_are_loaded(monkeypatch):
+def test_base_challenge_env_aliases_are_loaded(monkeypatch):
     monkeypatch.setenv("CHALLENGE_DATABASE_URL", "sqlite+aiosqlite:////data/challenge.sqlite3")
-    monkeypatch.setenv("CHALLENGE_SHARED_TOKEN_FILE", "/run/secrets/platform/challenge_token")
+    monkeypatch.setenv("CHALLENGE_SHARED_TOKEN_FILE", "/run/secrets/base/challenge_token")
     monkeypatch.setenv("CHALLENGE_DOCKER_ENABLED", "true")
     monkeypatch.setenv("CHALLENGE_DOCKER_BACKEND", "broker")
-    monkeypatch.setenv("CHALLENGE_DOCKER_BROKER_URL", "http://platform-docker-broker:8082")
+    monkeypatch.setenv("CHALLENGE_DOCKER_BROKER_URL", "http://base-docker-broker:8082")
     monkeypatch.setenv(
-        "CHALLENGE_DOCKER_BROKER_TOKEN_FILE", "/run/secrets/platform/challenge_token"
+        "CHALLENGE_DOCKER_BROKER_TOKEN_FILE", "/run/secrets/base/challenge_token"
     )
 
     settings = PrismSettings()
 
     assert settings.database_url == "sqlite+aiosqlite:////data/challenge.sqlite3"
-    assert settings.shared_token_file == "/run/secrets/platform/challenge_token"
+    assert settings.shared_token_file == "/run/secrets/base/challenge_token"
     assert settings.docker_enabled is True
     assert settings.docker_backend == "broker"
-    assert settings.docker_broker_url == "http://platform-docker-broker:8082"
-    assert str(settings.docker_broker_token_file) == "/run/secrets/platform/challenge_token"
+    assert settings.docker_broker_url == "http://base-docker-broker:8082"
+    assert str(settings.docker_broker_token_file) == "/run/secrets/base/challenge_token"
 
 
 def test_docker_backend_default_is_broker_safe_when_env_unset(monkeypatch) -> None:
@@ -112,12 +112,12 @@ def test_example_config_parses_with_nas_defaults() -> None:
     settings = PrismSettings(**payload)
 
     assert settings.slug == "prism"
-    assert settings.execution_backend == "platform_gpu"
+    assert settings.execution_backend == "base_gpu"
     assert settings.public_submissions_enabled is True
     assert settings.arch_weight == 0.7
     assert settings.recipe_weight == 0.3
-    assert settings.platform_eval_max_gpu_count == 8
-    assert settings.platform_eval_gpu_count == 1
+    assert settings.base_eval_max_gpu_count == 8
+    assert settings.base_eval_gpu_count == 1
     assert settings.docker_enabled is False
     assert settings.docker_backend == "cli"
     assert settings.shared_token is None

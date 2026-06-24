@@ -72,7 +72,7 @@ def create_app(app_settings: PrismSettings = settings) -> FastAPI:
     )
     async def bridge_submission(
         request: Request,
-        x_platform_verified_hotkey: Annotated[str, Header(min_length=1, max_length=128)],
+        x_base_verified_hotkey: Annotated[str, Header(min_length=1, max_length=128)],
         x_submission_filename: Annotated[str | None, Header()] = None,
     ) -> SubmissionResponse:
         body = await request.body()
@@ -83,7 +83,7 @@ def create_app(app_settings: PrismSettings = settings) -> FastAPI:
         )
         if len(submission.code.encode()) > app_settings.max_code_bytes:
             raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "submission too large")
-        return await repository.create_submission(x_platform_verified_hotkey, submission)
+        return await repository.create_submission(x_base_verified_hotkey, submission)
 
     return app
 

@@ -207,7 +207,7 @@ def _evaluator(tmp_path: Path) -> PrismContainerEvaluator:
     settings = PrismSettings(
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'robust.sqlite3'}",
         shared_token="secret",
-        platform_eval_artifact_root=tmp_path / "artifacts",
+        base_eval_artifact_root=tmp_path / "artifacts",
     )
     ctx = PrismContext(vocab_size=32, sequence_length=16, seed=4242)
     return PrismContainerEvaluator(settings=settings, ctx=ctx)
@@ -217,7 +217,7 @@ def _evaluator(tmp_path: Path) -> PrismContainerEvaluator:
 
 
 def test_harness_container_env_sets_cublas_workspace_config(tmp_path: Path) -> None:
-    env = _evaluator(tmp_path)._env("sub-1", "h1", "a1", "platform_gpu")
+    env = _evaluator(tmp_path)._env("sub-1", "h1", "a1", "base_gpu")
     assert env["CUBLAS_WORKSPACE_CONFIG"] == ":4096:8"
 
 

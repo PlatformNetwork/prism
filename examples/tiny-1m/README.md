@@ -28,6 +28,6 @@ and any manifest it writes are ignored; the challenge authors `prism_run_manifes
 
 ## Submit
 
-Submit as a `.zip` bundle of this directory through the public route (when enabled) or the Platform
+Submit as a `.zip` bundle of this directory through the public route (when enabled) or the BASE
 proxy. See [docs/submissions.md](../../docs/submissions.md) and the
 [miner guide](../../docs/miner/README.md).

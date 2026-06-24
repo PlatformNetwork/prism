@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from platform_network.challenge_sdk.executors.docker import (
+    from base.challenge_sdk.executors.docker import (
         DockerContainerInfo,
         DockerExecutor,
         DockerExecutorError,
@@ -21,14 +21,14 @@ else:
 
 def _load_platform_docker():
     try:
-        return import_module("platform_network.challenge_sdk.executors.docker")
+        return import_module("base.challenge_sdk.executors.docker")
     except ModuleNotFoundError as exc:
-        if exc.name != "platform_network":
+        if exc.name != "base":
             raise
         platform_src = Path("/droid/platform-v10/src")
         if platform_src.is_dir():
             sys.path.insert(0, str(platform_src))
-            return import_module("platform_network.challenge_sdk.executors.docker")
+            return import_module("base.challenge_sdk.executors.docker")
         raise
 
 

@@ -49,7 +49,7 @@ DEFAULT_REVIEW_RULES = (
     ReviewRule("prism:model-contract", "Only implement the Prism model and recipe contract."),
 )
 CONTAINER_EXECUTION_BACKENDS = frozenset(
-    {"platform_container", "platform_gpu", "container_gpu", "docker_gpu"}
+    {"base_container", "base_gpu", "container_gpu", "docker_gpu"}
 )
 SUPPORTED_EXECUTION_BACKENDS = CONTAINER_EXECUTION_BACKENDS
 
@@ -96,7 +96,7 @@ class PrismWorker:
         repository: PrismRepository,
         ctx: PrismContext,
         *,
-        execution_backend: str = "platform_gpu",
+        execution_backend: str = "base_gpu",
         settings: PrismSettings | None = None,
     ) -> None:
         if execution_backend not in SUPPORTED_EXECUTION_BACKENDS:
@@ -215,10 +215,10 @@ class PrismWorker:
             return submission_id
         effective_settings = self.settings.model_copy(
             update={
-                "platform_eval_gpu_count": lease.gpu_count,
-                "platform_eval_gpu_type": runtime_config.gpu_policy.gpu_type,
-                "platform_eval_gpu_server": lease.target_server,
-                "platform_eval_gpu_device_ids": lease.device_ids,
+                "base_eval_gpu_count": lease.gpu_count,
+                "base_eval_gpu_type": runtime_config.gpu_policy.gpu_type,
+                "base_eval_gpu_server": lease.target_server,
+                "base_eval_gpu_device_ids": lease.device_ids,
             }
         )
         evaluator = PrismContainerEvaluator(settings=effective_settings, ctx=self.ctx)
@@ -379,7 +379,7 @@ class PrismWorker:
         enforce_single_node_bound(
             _metadata_value(metadata, "gpu_count", "num_gpus", "requested_gpu_count", "gpus"),
             num_nodes=_metadata_value(metadata, "num_nodes", "nnodes", "nodes"),
-            max_gpu_count=self.settings.platform_eval_max_gpu_count,
+            max_gpu_count=self.settings.base_eval_max_gpu_count,
         )
 
     def _local_import_roots(self, snapshot: source_similarity.SourceSnapshot) -> set[str]:
@@ -596,7 +596,7 @@ class PrismWorker:
                         DockerMount(right, "/candidate"),
                         DockerMount(script, "/compare.py"),
                     ),
-                    labels={"platform.job": submission_id, "platform.task": "plagiarism"},
+                    labels={"base.job": submission_id, "base.task": "plagiarism"},
                     limits=DockerLimits(
                         cpus=min(self.settings.docker_cpus, 1.0),
                         memory="512m",

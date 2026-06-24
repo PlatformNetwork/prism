@@ -22,7 +22,7 @@ class PrismSettings(ChallengeSettings):
     name: str = "Prism"
     version: str = "0.1.0"
     api_version: str = "1.0"
-    sdk_version: str = "platform-challenge-1"
+    sdk_version: str = "base-challenge-1"
     database_path: Path = Path("/tmp/prism.sqlite3")
     shared_token: str | None = Field(
         default=None,
@@ -30,7 +30,7 @@ class PrismSettings(ChallengeSettings):
         validation_alias=AliasChoices("PRISM_SHARED_TOKEN", "CHALLENGE_SHARED_TOKEN"),
     )
     shared_token_file: str | None = Field(
-        default="/run/secrets/platform/challenge_token",
+        default="/run/secrets/base/challenge_token",
         repr=False,
         validation_alias=AliasChoices("PRISM_SHARED_TOKEN_FILE", "CHALLENGE_SHARED_TOKEN_FILE"),
     )
@@ -48,7 +48,7 @@ class PrismSettings(ChallengeSettings):
     static_instantiation_timeout_seconds: float = 30.0
     static_instantiation_memory_headroom_bytes: int = 8_589_934_592
     fineweb_sample_count: int = 128
-    execution_backend: str = "platform_gpu"
+    execution_backend: str = "base_gpu"
     prism_role: str = "master"
     public_submissions_enabled: bool = True
     worker_claim_timeout_seconds: int = 900
@@ -151,7 +151,7 @@ class PrismSettings(ChallengeSettings):
         ),
     )
     docker_allowed_images: tuple[str, ...] = Field(
-        default=("platformnetwork/", "ghcr.io/platformnetwork/"),
+        default=("baseintelligence/", "ghcr.io/baseintelligence/"),
         validation_alias=AliasChoices(
             "PRISM_DOCKER_ALLOWED_IMAGES", "CHALLENGE_DOCKER_ALLOWED_IMAGES"
         ),
@@ -184,31 +184,31 @@ class PrismSettings(ChallengeSettings):
         default=None,
         validation_alias=AliasChoices("PRISM_DOCKER_USER", "CHALLENGE_DOCKER_USER"),
     )
-    platform_eval_image: str = "ghcr.io/platformnetwork/prism-evaluator:latest"
+    base_eval_image: str = "ghcr.io/baseintelligence/prism-evaluator:latest"
     # Wall-clock budget hardening (architecture.md sections 4.3, 9). The score is
     # compute-normalized (tokens/FLOPs), so wall-clock is ONLY a safety cap, not part of the
     # score. Three layers, smallest first:
-    #   1. ``platform_eval_budget_seconds`` (graceful, 10-30 min): the challenge runner stops the
+    #   1. ``base_eval_budget_seconds`` (graceful, 10-30 min): the challenge runner stops the
     #      single-pass loop at this point and scores on the PARTIAL captured stream.
-    #   2. ``platform_eval_budget_seconds + platform_eval_watchdog_grace_seconds`` (hard): a
+    #   2. ``base_eval_budget_seconds + base_eval_watchdog_grace_seconds`` (hard): a
     #      runner watchdog thread terminates a loop that hangs OUTSIDE the instrumented iterator
     #      (so a non-iterating hang is still bounded), landing the run failed with a budget reason.
-    #   3. ``platform_eval_timeout_seconds`` (outer docker/broker cap): the absolute backstop, set
+    #   3. ``base_eval_timeout_seconds`` (outer docker/broker cap): the absolute backstop, set
     #      strictly above budget+grace so the runner gets a chance to stop gracefully first.
-    platform_eval_budget_seconds: int = 1200
-    platform_eval_watchdog_grace_seconds: int = 120
+    base_eval_budget_seconds: int = 1200
+    base_eval_watchdog_grace_seconds: int = 120
     # Bound on the only writable path (``ctx.artifacts_dir``): a runner watchdog fails the run if
     # the artifacts dir grows past this quota so an artifacts disk-fill cannot take down the host
     # (architecture.md section 9; VAL-HARNESS-026).
-    platform_eval_artifacts_quota_bytes: int = 2_147_483_648
-    platform_eval_timeout_seconds: int = 1800
-    platform_eval_cpus: float = 2.0
-    platform_eval_memory: str = "8g"
-    platform_eval_memory_swap: str | None = "8g"
-    platform_eval_pids_limit: int = 512
-    platform_eval_read_only: bool = True
-    platform_eval_max_gpu_count: int = Field(default=8, ge=1, le=8)
-    platform_eval_gpu_count: int = 1
+    base_eval_artifacts_quota_bytes: int = 2_147_483_648
+    base_eval_timeout_seconds: int = 1800
+    base_eval_cpus: float = 2.0
+    base_eval_memory: str = "8g"
+    base_eval_memory_swap: str | None = "8g"
+    base_eval_pids_limit: int = 512
+    base_eval_read_only: bool = True
+    base_eval_max_gpu_count: int = Field(default=8, ge=1, le=8)
+    base_eval_gpu_count: int = 1
     # Multi-GPU static contract policy (architecture.md section 8). Gate A statically verifies the
     # miner training.py uses the distributed primitives + a rank-0 write guard and rejects a
     # gpu_count > 8 / multi-node request before any GPU work. ``reject`` (default) hard-rejects a
@@ -219,28 +219,28 @@ class PrismSettings(ChallengeSettings):
             "PRISM_DISTRIBUTED_CONTRACT_POLICY", "CHALLENGE_DISTRIBUTED_CONTRACT_POLICY"
         ),
     )
-    platform_eval_gpu_type: str | None = None
-    platform_gpu_targets: str | None = None
-    platform_eval_gpu_server: str | None = None
-    platform_eval_gpu_device_ids: tuple[str, ...] = ()
-    platform_eval_task: str = "architecture"
-    platform_eval_artifact_root: Path = Path("/tmp/prism-eval-artifacts")
+    base_eval_gpu_type: str | None = None
+    base_gpu_targets: str | None = None
+    base_eval_gpu_server: str | None = None
+    base_eval_gpu_device_ids: tuple[str, ...] = ()
+    base_eval_task: str = "architecture"
+    base_eval_artifact_root: Path = Path("/tmp/prism-eval-artifacts")
     # Read-only locked FineWeb-Edu train split mount (architecture.md section 3). The broker
     # bind-mounts the staged train shards here (RO); the challenge runner resolves ctx.data_dir to
     # this path and fails fast when it is missing/empty (no random-token fallback).
-    platform_eval_data_dir: str = Field(
+    base_eval_data_dir: str = Field(
         default="/data/fineweb-edu/train",
-        validation_alias=AliasChoices("PRISM_PLATFORM_EVAL_DATA_DIR", "PRISM_EVAL_DATA_DIR"),
+        validation_alias=AliasChoices("PRISM_BASE_EVAL_DATA_DIR", "PRISM_EVAL_DATA_DIR"),
     )
     # Secret held-out val split (architecture.md sections 5, 6). It is NEVER bind-mounted into the
     # eval container (VAL-HARNESS-015 / VAL-CHEAT-007) and never exposed via PrismContext; only the
     # CHALLENGE SCORER reads it (host-side) to compute the held-out delta-over-random-init
     # tie-breaker and the train-vs-held-out anti-memorization gap. An unset/empty path simply
     # skips the held-out delta (the run still scores on prequential bpb).
-    platform_eval_val_data_dir: str = Field(
+    base_eval_val_data_dir: str = Field(
         default="/data/fineweb-edu/val",
         validation_alias=AliasChoices(
-            "PRISM_PLATFORM_EVAL_VAL_DATA_DIR", "PRISM_EVAL_VAL_DATA_DIR"
+            "PRISM_BASE_EVAL_VAL_DATA_DIR", "PRISM_EVAL_VAL_DATA_DIR"
         ),
     )
     # Host-readable train split for the anti-memorization gap (architecture.md section 6.2). The
@@ -251,10 +251,10 @@ class PrismSettings(ChallengeSettings):
     # gap) reliably flags a genuine memorizer while leaving a benign learner unflagged. The train
     # split is NOT secret, so the deploy may mount it into the scorer container; when this path is
     # unset/unavailable the gap gracefully falls back to the (basis-gated) prequential reference.
-    platform_eval_train_data_dir: str = Field(
+    base_eval_train_data_dir: str = Field(
         default="/data/fineweb-edu/train",
         validation_alias=AliasChoices(
-            "PRISM_PLATFORM_EVAL_TRAIN_DATA_DIR", "PRISM_EVAL_TRAIN_DATA_DIR"
+            "PRISM_BASE_EVAL_TRAIN_DATA_DIR", "PRISM_EVAL_TRAIN_DATA_DIR"
         ),
     )
     # Host-side held-out compute budget (architecture.md sections 4, 5; m4-heldout-live-budget-
@@ -265,22 +265,22 @@ class PrismSettings(ChallengeSettings):
     # models so the delta stays comparable) and uses a raised, configurable timeout. The byte
     # denominator keeps the delta tokenizer-agnostic; the fixed prefix keeps it deterministic. A
     # byte budget <= 0 scores the entire val split.
-    platform_eval_heldout_val_byte_budget: int = Field(
+    base_eval_heldout_val_byte_budget: int = Field(
         default=65536,
         validation_alias=AliasChoices(
-            "PRISM_PLATFORM_EVAL_HELDOUT_VAL_BYTE_BUDGET", "PRISM_EVAL_HELDOUT_VAL_BYTE_BUDGET"
+            "PRISM_BASE_EVAL_HELDOUT_VAL_BYTE_BUDGET", "PRISM_EVAL_HELDOUT_VAL_BYTE_BUDGET"
         ),
     )
-    platform_eval_heldout_timeout_seconds: float = Field(
+    base_eval_heldout_timeout_seconds: float = Field(
         default=600.0,
         validation_alias=AliasChoices(
-            "PRISM_PLATFORM_EVAL_HELDOUT_TIMEOUT_SECONDS", "PRISM_EVAL_HELDOUT_TIMEOUT_SECONDS"
+            "PRISM_BASE_EVAL_HELDOUT_TIMEOUT_SECONDS", "PRISM_EVAL_HELDOUT_TIMEOUT_SECONDS"
         ),
     )
-    platform_eval_reference_tokenizer_dir: str = Field(
+    base_eval_reference_tokenizer_dir: str = Field(
         default="/opt/reference-tokenizers",
         validation_alias=AliasChoices(
-            "PRISM_PLATFORM_EVAL_REFERENCE_TOKENIZER_DIR", "PRISM_REFERENCE_TOKENIZER_DIR"
+            "PRISM_BASE_EVAL_REFERENCE_TOKENIZER_DIR", "PRISM_REFERENCE_TOKENIZER_DIR"
         ),
     )
     validator_hotkeys: tuple[str, ...] = ()
@@ -295,15 +295,15 @@ class PrismSettings(ChallengeSettings):
         raise RuntimeError("PRISM_SHARED_TOKEN or PRISM_SHARED_TOKEN_FILE is required")
 
     @property
-    def platform_eval_hard_timeout_seconds(self) -> int:
+    def base_eval_hard_timeout_seconds(self) -> int:
         """Outer docker/broker timeout, forced strictly above the graceful budget + watchdog grace.
 
         The runner's graceful budget and hard watchdog must both fire BEFORE this absolute backstop
         so an over-budget loop is stopped gracefully (or failed with a budget reason) rather than
         bluntly killed by the broker; a slack margin gives the runner time to author its manifest.
         """
-        floor = self.platform_eval_budget_seconds + self.platform_eval_watchdog_grace_seconds + 60
-        return max(self.platform_eval_timeout_seconds, floor)
+        floor = self.base_eval_budget_seconds + self.base_eval_watchdog_grace_seconds + 60
+        return max(self.base_eval_timeout_seconds, floor)
 
     @property
     def resolved_database_path(self) -> Path:

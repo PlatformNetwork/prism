@@ -102,7 +102,7 @@ train-vs-held-out gap is penalized as memorization.
 ## Submitting Work
 
 Submit through the public submission route when public submissions are enabled, or through the
-Platform proxy in production:
+BASE proxy in production:
 
 ```http
 POST /v1/submissions

@@ -164,7 +164,7 @@ class PrismContainerEvaluator:
             try:
                 result = self._executor().run(
                     DockerRunSpec(
-                        image=self.settings.platform_eval_image,
+                        image=self.settings.base_eval_image,
                         command=command,
                         mounts=self._mounts(workspace, artifact_output),
                         workdir="/workspace",
@@ -178,17 +178,17 @@ class PrismContainerEvaluator:
                         ),
                         labels=self._labels(submission_id, backend, gpu_lease, mode),
                         limits=DockerLimits(
-                            cpus=self.settings.platform_eval_cpus,
-                            memory=self.settings.platform_eval_memory,
-                            memory_swap=self.settings.platform_eval_memory_swap,
-                            pids_limit=self.settings.platform_eval_pids_limit,
+                            cpus=self.settings.base_eval_cpus,
+                            memory=self.settings.base_eval_memory,
+                            memory_swap=self.settings.base_eval_memory_swap,
+                            pids_limit=self.settings.base_eval_pids_limit,
                             network=self.settings.docker_network,
-                            read_only=self.settings.platform_eval_read_only,
+                            read_only=self.settings.base_eval_read_only,
                             user=self.settings.docker_user,
                             gpu_count=int(gpu_allocation["actual_gpu_count"]),
                         ),
                     ),
-                    self.settings.platform_eval_hard_timeout_seconds,
+                    self.settings.base_eval_hard_timeout_seconds,
                 )
             except DockerExecutorError as exc:
                 raise InfrastructureEvaluationError(str(exc)) from exc
@@ -205,7 +205,7 @@ class PrismContainerEvaluator:
                         rule_id="prism:budget-exceeded",
                         artifact_path="container://prism-eval",
                         ast_node="DockerRunSpec.timeout_seconds",
-                        basis=f"{submission_id}:{self.settings.platform_eval_hard_timeout_seconds}",
+                        basis=f"{submission_id}:{self.settings.base_eval_hard_timeout_seconds}",
                         explanation="container evaluation exceeded the wall-clock budget cap",
                     ),
                 )
@@ -249,7 +249,7 @@ class PrismContainerEvaluator:
     def _fresh_artifact_output(self, submission_id: str, attempt: int) -> Path:
         """A fresh artifacts dir per run; never reuse a prior run's manifest/artifacts."""
         artifact_output = (
-            self.settings.platform_eval_artifact_root / submission_id / f"attempt-{attempt}"
+            self.settings.base_eval_artifact_root / submission_id / f"attempt-{attempt}"
         )
         for stale in _existing_manifests(artifact_output):
             try:
@@ -290,12 +290,12 @@ class PrismContainerEvaluator:
                 build_model_symbol=build_model_symbol,
                 ctx=self.ctx,
                 trained_state_path=trained_state_path,
-                val_data_dir=self.settings.platform_eval_val_data_dir,
-                train_data_dir=self.settings.platform_eval_train_data_dir,
+                val_data_dir=self.settings.base_eval_val_data_dir,
+                train_data_dir=self.settings.base_eval_train_data_dir,
                 train_bpb=_manifest_train_bpb(manifest),
                 train_bpb_basis=_manifest_train_bpb_basis(manifest),
-                val_byte_budget=self.settings.platform_eval_heldout_val_byte_budget,
-                timeout_seconds=self.settings.platform_eval_heldout_timeout_seconds,
+                val_byte_budget=self.settings.base_eval_heldout_val_byte_budget,
+                timeout_seconds=self.settings.base_eval_heldout_timeout_seconds,
             )
         except Exception:  # noqa: BLE001 - held-out is auxiliary; never fail the run on it
             return manifest
@@ -323,7 +323,7 @@ class PrismContainerEvaluator:
             challenge=self.settings.slug,
             docker_bin=self.settings.docker_bin,
             allowed_images=tuple(self.settings.docker_allowed_images)
-            or (self.settings.platform_eval_image,),
+            or (self.settings.base_eval_image,),
             backend=self.settings.docker_backend,
             broker_url=self.settings.docker_broker_url,
             broker_token=self.settings.docker_broker_token,
@@ -399,14 +399,14 @@ class PrismContainerEvaluator:
                 "max_layers": self.ctx.max_layers,
                 "max_parameters": self.ctx.max_parameters,
                 "seed": self.ctx.seed,
-                "data_dir": self.settings.platform_eval_data_dir,
+                "data_dir": self.settings.base_eval_data_dir,
                 "artifacts_dir": "/artifacts",
-                "reference_tokenizer_dir": self.settings.platform_eval_reference_tokenizer_dir,
+                "reference_tokenizer_dir": self.settings.base_eval_reference_tokenizer_dir,
                 "token_budget": self.ctx.token_budget,
                 "step_budget": self.ctx.step_budget,
-                "budget_seconds": self.settings.platform_eval_budget_seconds,
-                "watchdog_grace_seconds": self.settings.platform_eval_watchdog_grace_seconds,
-                "artifacts_quota_bytes": self.settings.platform_eval_artifacts_quota_bytes,
+                "budget_seconds": self.settings.base_eval_budget_seconds,
+                "watchdog_grace_seconds": self.settings.base_eval_watchdog_grace_seconds,
+                "artifacts_quota_bytes": self.settings.base_eval_artifacts_quota_bytes,
                 "rank": 0,
                 "local_rank": 0,
                 "world_size": world_size,
@@ -440,8 +440,8 @@ class PrismContainerEvaluator:
             "PRISM_MAX_GPU_COUNT": str(gpu_allocation["max_gpu_count"]),
             "PRISM_ARTIFACT_OUTPUT_PATH": "/artifacts",
             "PRISM_RUN_MANIFEST_PATH": f"/artifacts/{RUN_MANIFEST_V2_FILENAME}",
-            "PRISM_DATA_DIR": self.settings.platform_eval_data_dir,
-            "PRISM_REFERENCE_TOKENIZER_DIR": self.settings.platform_eval_reference_tokenizer_dir,
+            "PRISM_DATA_DIR": self.settings.base_eval_data_dir,
+            "PRISM_REFERENCE_TOKENIZER_DIR": self.settings.base_eval_reference_tokenizer_dir,
             # Loopback rendezvous so the c10d hostname lookup cannot hang (readiness B2).
             "MASTER_ADDR": DEFAULT_MASTER_ADDR,
             "MASTER_PORT": str(DEFAULT_MASTER_PORT),
@@ -473,9 +473,9 @@ class PrismContainerEvaluator:
     ) -> dict[str, str]:
         gpu_allocation = self._gpu_allocation(gpu_lease)
         labels = {
-            "platform.job": submission_id,
-            "platform.task": self.settings.platform_eval_task,
-            "platform.backend": backend,
+            "base.job": submission_id,
+            "base.task": self.settings.base_eval_task,
+            "base.backend": backend,
             "prism.submission_id": submission_id,
             "prism.execution_mode": execution_mode.value,
             "prism.actual_gpu_count": str(gpu_allocation["actual_gpu_count"]),
@@ -496,24 +496,24 @@ class PrismContainerEvaluator:
     def _gpu_allocation(self, gpu_lease: GpuLease | None) -> dict[str, Any]:
         return {
             "actual_gpu_count": (
-                gpu_lease.gpu_count if gpu_lease else self.settings.platform_eval_gpu_count
+                gpu_lease.gpu_count if gpu_lease else self.settings.base_eval_gpu_count
             ),
             "max_gpu_count": (
                 gpu_lease.max_gpu_count
                 if gpu_lease
-                else self.settings.platform_eval_max_gpu_count
+                else self.settings.base_eval_max_gpu_count
             ),
-            "gpu_type": self.settings.platform_eval_gpu_type,
+            "gpu_type": self.settings.base_eval_gpu_type,
             "target_id": gpu_lease.target_id if gpu_lease else None,
             "target_server": (
                 gpu_lease.target_server
                 if gpu_lease
-                else self.settings.platform_eval_gpu_server
+                else self.settings.base_eval_gpu_server
             ),
             "device_ids": list(
                 gpu_lease.device_ids
                 if gpu_lease
-                else self.settings.platform_eval_gpu_device_ids
+                else self.settings.base_eval_gpu_device_ids
             ),
         }
 

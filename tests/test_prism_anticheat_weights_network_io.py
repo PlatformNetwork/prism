@@ -252,7 +252,7 @@ def test_anticheat_filesystem_imports_blocked(module: str) -> None:
 
 def test_anticheat_eval_container_rootfs_read_only_except_artifacts() -> None:
     settings = PrismSettings()
-    assert settings.platform_eval_read_only is True
+    assert settings.base_eval_read_only is True
 
 
 def test_anticheat_only_artifacts_mount_is_writable(tmp_path: Path) -> None:
@@ -271,7 +271,7 @@ def _evaluator(tmp_path: Path) -> PrismContainerEvaluator:
     settings = PrismSettings(
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'anticheat.sqlite3'}",
         shared_token="secret",
-        platform_eval_artifact_root=tmp_path / "artifacts",
+        base_eval_artifact_root=tmp_path / "artifacts",
     )
     ctx = PrismContext(vocab_size=32, sequence_length=16, seed=4242)
     return PrismContainerEvaluator(settings=settings, ctx=ctx)
@@ -279,7 +279,7 @@ def _evaluator(tmp_path: Path) -> PrismContainerEvaluator:
 
 def test_anticheat_eval_env_carries_no_review_or_host_secret(tmp_path: Path) -> None:
     ev = _evaluator(tmp_path)
-    env = ev._env("sub-1", "h1", "a1", "platform_gpu")
+    env = ev._env("sub-1", "h1", "a1", "base_gpu")
     joined = " ".join(f"{key}={value}" for key, value in env.items()).lower()
     for marker in ("openrouter", "api_key", "authorization", "bearer", "openai", "or_key"):
         assert marker not in joined, f"unexpected secret marker {marker!r} in eval env"

@@ -78,7 +78,7 @@ submission per hotkey survives, so a worse same-hotkey submission never supersed
 
 ## Weights
 
-`get_weights` converts completed scores into normalized Platform weights: one weight per hotkey, taken
+`get_weights` converts completed scores into normalized BASE weights: one weight per hotkey, taken
 from that hotkey's best `final_score`, normalized to sum to 1.0. Weights are always **dry-run** and
 are never written on-chain.
 

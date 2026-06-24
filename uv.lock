@@ -291,6 +291,31 @@ wheels = [
 ]
 
 [[package]]
+name = "base"
+version = "3.0.4"
+source = { git = "https://github.com/BaseIntelligence/base.git#d98db9385af416c4e0be4cd2b2b6f2d9099daf05" }
+dependencies = [
+    { name = "aiosqlite" },
+    { name = "alembic" },
+    { name = "asyncpg" },
+    { name = "docker" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-instrumentation-fastapi" },
+    { name = "opentelemetry-instrumentation-httpx" },
+    { name = "opentelemetry-instrumentation-sqlalchemy" },
+    { name = "opentelemetry-sdk" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "pyyaml" },
+    { name = "sentry-sdk", extra = ["fastapi"] },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "typer" },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[[package]]
 name = "bittensor"
 version = "10.3.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1954,31 +1979,6 @@ wheels = [
 ]
 
 [[package]]
-name = "platform-network"
-version = "3.0.4"
-source = { git = "https://github.com/PlatformNetwork/platform.git#38de3bd3ef0efda9668383e09ae4c8ea870db822" }
-dependencies = [
-    { name = "aiosqlite" },
-    { name = "alembic" },
-    { name = "asyncpg" },
-    { name = "docker" },
-    { name = "fastapi" },
-    { name = "httpx" },
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-instrumentation-fastapi" },
-    { name = "opentelemetry-instrumentation-httpx" },
-    { name = "opentelemetry-instrumentation-sqlalchemy" },
-    { name = "opentelemetry-sdk" },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "pyyaml" },
-    { name = "sentry-sdk", extra = ["fastapi"] },
-    { name = "sqlalchemy", extra = ["asyncio"] },
-    { name = "typer" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
-[[package]]
 name = "pluggy"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1993,11 +1993,11 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
+    { name = "base" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "langchain-openai" },
     { name = "numpy" },
-    { name = "platform-network" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyyaml" },
@@ -2022,13 +2022,13 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20" },
+    { name = "base", git = "https://github.com/BaseIntelligence/base.git" },
     { name = "bittensor", marker = "extra == 'bittensor'", specifier = ">=9" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "langchain-openai", specifier = ">=0.2.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "numpy", specifier = ">=1.26" },
-    { name = "platform-network", git = "https://github.com/PlatformNetwork/platform.git" },
     { name = "pydantic", specifier = ">=2.8" },
     { name = "pydantic-settings", specifier = ">=2.4" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },

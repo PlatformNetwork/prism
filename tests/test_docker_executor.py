@@ -21,17 +21,17 @@ from prism_challenge.sdk.executors.docker import (
 
 def test_build_run_command_has_security_flags(tmp_path: Path) -> None:
     spec = DockerRunSpec(
-        image="ghcr.io/platformnetwork/prism-evaluator:latest",
+        image="ghcr.io/baseintelligence/prism-evaluator:latest",
         command=("python", "/workspace/runner.py"),
         mounts=(DockerMount(tmp_path, "/workspace"),),
         workdir="/workspace",
         env={"PRISM_GPU_COUNT": "1"},
-        labels={"platform.job": "job-1", "platform.task": "architecture"},
+        labels={"base.job": "job-1", "base.task": "architecture"},
         limits=DockerLimits(cpus=1.5, memory="512m", pids_limit=64, user="65532:65532"),
     )
 
     cmd = DockerExecutor(
-        challenge="prism", allowed_images=("ghcr.io/platformnetwork/",)
+        challenge="prism", allowed_images=("ghcr.io/baseintelligence/",)
     ).build_run_command(spec, "prism-job-task")
 
     assert cmd[:3] == ["docker", "run", "--rm"]
@@ -43,11 +43,11 @@ def test_build_run_command_has_security_flags(tmp_path: Path) -> None:
     assert "--memory-swap" in cmd and "512m" in cmd
     assert "--user" in cmd and "65532:65532" in cmd
     assert "--ulimit" in cmd and "nofile=1024:1024" in cmd
-    assert "--label" in cmd and "platform.challenge=prism" in cmd
+    assert "--label" in cmd and "base.challenge=prism" in cmd
     assert f"{tmp_path.resolve()}:/workspace:ro" in cmd
     assert "PRISM_GPU_COUNT=1" in cmd
     assert cmd[-3:] == [
-        "ghcr.io/platformnetwork/prism-evaluator:latest",
+        "ghcr.io/baseintelligence/prism-evaluator:latest",
         "python",
         "/workspace/runner.py",
     ]
@@ -60,14 +60,14 @@ def test_platform_v10_resource_security_fields_are_preserved(tmp_path: Path) -> 
         security_opt=("no-new-privileges", "seccomp=unconfined"),
     )
     spec = DockerRunSpec(
-        image="ghcr.io/platformnetwork/prism-evaluator:latest",
+        image="ghcr.io/baseintelligence/prism-evaluator:latest",
         command=("true",),
         mounts=(DockerMount(tmp_path, "/workspace"),),
         limits=limits,
     )
 
     cmd = DockerExecutor(
-        challenge="prism", allowed_images=("ghcr.io/platformnetwork/",)
+        challenge="prism", allowed_images=("ghcr.io/baseintelligence/",)
     ).build_run_command(spec, "prism-job-task")
 
     assert limits.tmpfs == (
@@ -89,18 +89,18 @@ def test_platform_v10_resource_security_fields_are_preserved(tmp_path: Path) -> 
 
 def test_reserved_labels_cannot_be_overridden(tmp_path: Path) -> None:
     spec = DockerRunSpec(
-        image="ghcr.io/platformnetwork/prism-evaluator:latest",
+        image="ghcr.io/baseintelligence/prism-evaluator:latest",
         command=("true",),
         mounts=(DockerMount(tmp_path, "/workspace"),),
-        labels={"platform.challenge": "evil", "platform.job": "job-1"},
+        labels={"base.challenge": "evil", "base.job": "job-1"},
     )
 
     cmd = DockerExecutor(
-        challenge="prism", allowed_images=("ghcr.io/platformnetwork/",)
+        challenge="prism", allowed_images=("ghcr.io/baseintelligence/",)
     ).build_run_command(spec, "name")
 
-    assert "platform.challenge=prism" in cmd
-    assert "platform.challenge=evil" not in cmd
+    assert "base.challenge=prism" in cmd
+    assert "base.challenge=evil" not in cmd
 
 
 @pytest.mark.parametrize("image", ["-v", "bad image", "../../bad"])
@@ -121,7 +121,7 @@ def test_rejects_images_outside_allowlist(tmp_path: Path) -> None:
         mounts=(DockerMount(tmp_path, "/x"),),
     )
     with pytest.raises(DockerExecutorError, match="not allowed"):
-        DockerExecutor(challenge="prism", allowed_images=("ghcr.io/platformnetwork/",)).run(
+        DockerExecutor(challenge="prism", allowed_images=("ghcr.io/baseintelligence/",)).run(
             spec, timeout_seconds=1
         )
 
@@ -175,7 +175,7 @@ def test_run_cli_success_and_cleanup(monkeypatch: pytest.MonkeyPatch, tmp_path: 
             image="python:3.12",
             command=("true",),
             mounts=(DockerMount(tmp_path, "/x"),),
-            labels={"platform.job": "job-1"},
+            labels={"base.job": "job-1"},
             name="fixed-name",
         ),
         timeout_seconds=3,
@@ -243,9 +243,9 @@ def test_cleanup_job_uses_labels(monkeypatch: pytest.MonkeyPatch) -> None:
         "ps",
         "-aq",
         "--filter",
-        "label=platform.challenge=prism",
+        "label=base.challenge=prism",
         "--filter",
-        "label=platform.job=job-1",
+        "label=base.job=job-1",
     ]
     assert calls[1] == ["docker", "rm", "-f", "abc", "def"]
 
@@ -265,7 +265,7 @@ def test_list_containers_uses_challenge_and_job_filters(
                     "Image": "python:3.12",
                     "Status": "Up",
                     "CreatedAt": "now",
-                    "Labels": "platform.challenge=prism,platform.job=job-1",
+                    "Labels": "base.challenge=prism,base.job=job-1",
                 }
             )
             + "\n",
@@ -281,9 +281,9 @@ def test_list_containers_uses_challenge_and_job_filters(
         "ps",
         "-a",
         "--filter",
-        "label=platform.challenge=prism",
+        "label=base.challenge=prism",
         "--filter",
-        "label=platform.job=job-1",
+        "label=base.job=job-1",
         "--format",
         "{{json .}}",
     ]
@@ -295,7 +295,7 @@ def test_list_containers_uses_challenge_and_job_filters(
             status="Up",
             job_id="job-1",
             created="now",
-            labels={"platform.challenge": "prism", "platform.job": "job-1"},
+            labels={"base.challenge": "prism", "base.job": "job-1"},
         )
     ]
 
@@ -354,7 +354,7 @@ def test_broker_backend_posts_run_request(monkeypatch: pytest.MonkeyPatch, tmp_p
             image="python:3.12-slim",
             command=("python", "-V"),
             mounts=(DockerMount(tmp_path, "/mnt"),),
-            labels={"platform.job": "job-1"},
+            labels={"base.job": "job-1"},
         ),
         timeout_seconds=20,
     )
@@ -391,7 +391,7 @@ def test_broker_backend_lists_containers(monkeypatch: pytest.MonkeyPatch) -> Non
                             "image": "python",
                             "status": "running",
                             "job_id": "job-1",
-                            "labels": {"platform.challenge": "prism"},
+                            "labels": {"base.challenge": "prism"},
                         }
                     ]
                 }

@@ -251,10 +251,10 @@ def test_container_augment_passes_configured_heldout_budget_and_timeout(tmp_path
     val_dir = _stage_val(tmp_path, lines=40)
     artifact_root = tmp_path / "artifact-root"
     settings = PrismSettings(
-        platform_eval_val_data_dir=str(val_dir),
-        platform_eval_artifact_root=artifact_root,
-        platform_eval_heldout_val_byte_budget=12345,
-        platform_eval_heldout_timeout_seconds=321.0,
+        base_eval_val_data_dir=str(val_dir),
+        base_eval_artifact_root=artifact_root,
+        base_eval_heldout_val_byte_budget=12345,
+        base_eval_heldout_timeout_seconds=321.0,
     )
     ctx = _host_ctx()
     evaluator = PrismContainerEvaluator(settings=settings, ctx=ctx)

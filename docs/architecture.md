@@ -1,7 +1,7 @@
 # Architecture
 
-PRISM is a Platform challenge service. It runs as a FastAPI application with SQLite state, internal
-Platform authentication, and GPU evaluation through the Platform Docker broker. PRISM measures a
+PRISM is a BASE challenge service. It runs as a FastAPI application with SQLite state, internal
+BASE authentication, and GPU evaluation through the BASE Docker broker. PRISM measures a
 model's ability to learn: miners submit two scripts, the challenge owns the data and the evaluation,
 and the validator re-executes the miner's training loop under a forced random init and computes the
 score itself.
@@ -10,7 +10,7 @@ score itself.
 
 ```mermaid
 flowchart LR
-    Miner[Miner] --> Proxy[Platform Proxy]
+    Miner[Miner] --> Proxy[BASE Proxy]
     Proxy --> Bridge[PRISM Bridge]
     Bridge --> DB[(SQLite)]
     Bridge --> Queue[Worker Queue]
@@ -34,11 +34,11 @@ flowchart LR
 | LLM hard gate | OpenRouter review of both scripts; a `reject` is terminal before any GPU work |
 | Container runner | Challenge-owned forced-init re-execution that captures the online loss stream |
 | Scoring | Prequential bits-per-byte plus the held-out delta tie-breaker and anti-memorization gap |
-| Weights module | Converts normalized completed scores into dry-run Platform weights |
+| Weights module | Converts normalized completed scores into dry-run BASE weights |
 
-## Platform Integration
+## BASE Integration
 
-Platform is responsible for miner-facing upload security. It verifies signatures, timestamps,
+BASE is responsible for miner-facing upload security. It verifies signatures, timestamps,
 nonces, and hotkey identity before forwarding a submission to PRISM.
 
 PRISM receives verified submissions on:
@@ -47,7 +47,7 @@ PRISM receives verified submissions on:
 POST /internal/v1/bridge/submissions
 ```
 
-The bridge trusts only internal Platform authentication and the verified hotkey header. Miner-supplied
+The bridge trusts only internal BASE authentication and the verified hotkey header. Miner-supplied
 identity headers are not trusted.
 
 ## Submission Contract
@@ -64,10 +64,10 @@ no longer satisfies the contract: the architecture and training roles must be tw
 
 PRISM does not execute miner submissions directly in the master process. The worker performs static
 inspection and the LLM hard gate, then sends the project to an isolated evaluator container through
-the Platform Docker broker:
+the BASE Docker broker:
 
 ```text
-PRISM worker -> DockerExecutor -> Platform Docker broker -> GPU evaluator container
+PRISM worker -> DockerExecutor -> BASE Docker broker -> GPU evaluator container
 ```
 
 The pre-GPU static gates run in this order, and a rejection at any of them is terminal before the

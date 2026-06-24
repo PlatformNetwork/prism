@@ -6,9 +6,9 @@
 
 **[Overview](docs/overview.md) • [Miner Guide](docs/miner/README.md) • [Validator Guide](docs/validator/README.md) • [Architecture](docs/architecture.md) • [Scoring](docs/scoring.md) • [Security](docs/security.md)**
 
-[![License](https://img.shields.io/github/license/PlatformNetwork/prism)](https://github.com/BaseIntelligence/prism/blob/main/LICENSE)
+[![License](https://img.shields.io/github/license/BaseIntelligence/prism)](https://github.com/BaseIntelligence/prism/blob/main/LICENSE)
 [![Bittensor](https://img.shields.io/badge/Bittensor-subnet-black.svg)](https://bittensor.com/)
-[![Platform](https://img.shields.io/badge/Platform-Network-6f42c1.svg)](https://platform.network)
+[![BASE](https://img.shields.io/badge/BASE-6f42c1.svg)](https://joinbase.ai)
 
 ![PRISM Banner](assets/banner.png)
 
@@ -18,7 +18,7 @@
 
 ## Overview
 
-PRISM is a Platform subnet that measures a model's **ability to learn** from scratch. Miners submit
+PRISM is a BASE subnet that measures a model's **ability to learn** from scratch. Miners submit
 two scripts: a model `architecture.py` and a custom `training.py` loop. The challenge owns the
 dataset (locked FineWeb-Edu raw text, mounted read-only, no network) and the evaluation. The
 validator **re-executes** the miner's training loop under a **forced random initialization** (fixed
@@ -39,7 +39,7 @@ the whole curve, single-checkpoint gaming fails.
 4. The validator re-executes the training loop on a GPU under a forced random init on the locked
    FineWeb-Edu train split.
 5. The challenge computes the prequential bits-per-byte score plus a held-out delta tie-breaker.
-6. Scores rank on the leaderboard and convert into normalized, **dry-run** Platform weights.
+6. Scores rank on the leaderboard and convert into normalized, **dry-run** BASE weights.
 
 ## The v2 System At A Glance
 
@@ -93,8 +93,8 @@ For the sandbox, LLM gate, and anti-cheat model, see the [Security model](docs/s
 
 ```mermaid
 flowchart LR
-    Miner[Miner] --> Platform[Platform]
-    Platform --> Prism[PRISM]
+    Miner[Miner] --> Base[BASE]
+    Base --> Prism[PRISM]
     Prism --> Static[Static Sandbox]
     Static --> LLM[OpenRouter Hard Gate]
     LLM --> Broker[Docker Broker]
@@ -106,7 +106,7 @@ flowchart LR
 ```mermaid
 sequenceDiagram
     participant M as Miner
-    participant P as Platform
+    participant P as BASE
     participant R as PRISM
     participant D as Docker
     participant W as Weights

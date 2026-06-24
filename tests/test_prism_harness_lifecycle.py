@@ -13,7 +13,7 @@ from prism_challenge.db import Database
 from prism_challenge.gpu_scheduler import (
     GpuLeaseRequest,
     GpuLeaseScheduler,
-    PlatformGpuTarget,
+    BaseGpuTarget,
 )
 from prism_challenge.sdk.executors.docker import DockerRunResult
 
@@ -34,10 +34,10 @@ def _settings(tmp_path: Path, name: str) -> PrismSettings:
         database_url=f"sqlite+aiosqlite:///{tmp_path / name}",
         shared_token="secret",
         allow_insecure_signatures=True,
-        execution_backend="platform_gpu",
+        execution_backend="base_gpu",
         docker_enabled=True,
         docker_backend="broker",
-        docker_broker_url="http://platform-docker-broker:8082",
+        docker_broker_url="http://base-docker-broker:8082",
         docker_broker_token="secret",
         plagiarism_enabled=False,
         # No OpenRouter key in the unit env; disable the gate (covered in test_*llm*).
@@ -196,7 +196,7 @@ async def test_concurrent_eval_submissions_serialized_on_single_gpu(tmp_path) ->
     database = Database(tmp_path / "serialize.sqlite3")
     await database.init()
     scheduler = GpuLeaseScheduler(
-        database, (PlatformGpuTarget(id="gpu-a", server="server-a", gpu_count=1),)
+        database, (BaseGpuTarget(id="gpu-a", server="server-a", gpu_count=1),)
     )
 
     first = await scheduler.enqueue_or_allocate(_eval_request("sub-A"))

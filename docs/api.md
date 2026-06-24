@@ -1,6 +1,6 @@
 # API Reference
 
-PRISM exposes public challenge routes and internal Platform routes.
+PRISM exposes public challenge routes and internal BASE routes.
 
 ## Public Routes
 
@@ -15,7 +15,7 @@ Returns challenge version, API version, SDK version, and capabilities.
 ### `POST /v1/submissions`
 
 Submit a two-script bundle directly to PRISM. In production, miner submissions usually enter through
-the Platform proxy.
+the BASE proxy.
 
 Request:
 
@@ -27,7 +27,7 @@ Request:
 }
 ```
 
-The direct public route uses miner authentication headers. Platform bridge uploads use the internal
+The direct public route uses miner authentication headers. BASE bridge uploads use the internal
 route instead.
 
 ### `GET /v1/submissions/history`
@@ -90,7 +90,7 @@ Returns recent eval-job health entries (id, submission id, level, status, attemp
 
 Returns a GPU-lease summary (total GPUs, active leases, by status, by tier).
 
-## Internal Platform Routes
+## Internal BASE Routes
 
 All internal routes require:
 
@@ -100,18 +100,18 @@ Authorization: Bearer <shared-token>
 
 ### `GET /internal/v1/get_weights`
 
-Standard Platform challenge contract. Returns normalized, dry-run hotkey weights (one per hotkey, from
+Standard BASE challenge contract. Returns normalized, dry-run hotkey weights (one per hotkey, from
 that hotkey's best `final_score`). Weights are never written on-chain.
 
 ### `POST /internal/v1/bridge/submissions`
 
-Receives Platform-verified submissions.
+Receives BASE-verified submissions.
 
 Headers:
 
 ```text
 Authorization: Bearer <shared-token>
-X-Platform-Verified-Hotkey: <hotkey>
+X-Base-Verified-Hotkey: <hotkey>
 X-Submission-Filename: project.zip
 Content-Type: application/zip
 ```

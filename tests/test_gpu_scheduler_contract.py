@@ -8,7 +8,7 @@ from prism_challenge.db import Database
 from prism_challenge.gpu_scheduler import (
     GpuLeaseRequest,
     GpuLeaseScheduler,
-    PlatformGpuTarget,
+    BaseGpuTarget,
     lease_request_from_runtime,
 )
 from prism_challenge.repository import PrismRepository
@@ -30,7 +30,7 @@ async def test_autosplit_to_one_gpu_for_non_scoring_path(repository: PrismReposi
     runtime_policy = await repository.runtime_config(PrismSettings(), official=True)
     scheduler = GpuLeaseScheduler(
         repository.database,
-        (PlatformGpuTarget(id="target-a", server="server-a", gpu_count=1),),
+        (BaseGpuTarget(id="target-a", server="server-a", gpu_count=1),),
     )
 
     lease = await scheduler.enqueue_or_allocate(
@@ -63,7 +63,7 @@ async def test_official_profile_requires_exact_resources(repository: PrismReposi
     runtime_policy = await repository.runtime_config(PrismSettings(), official=True)
     scheduler = GpuLeaseScheduler(
         repository.database,
-        (PlatformGpuTarget(id="target-a", server="server-a", gpu_count=1),),
+        (BaseGpuTarget(id="target-a", server="server-a", gpu_count=1),),
     )
 
     lease = await scheduler.enqueue_or_allocate(
@@ -85,7 +85,7 @@ async def test_official_profile_requires_exact_resources(repository: PrismReposi
 async def test_fifo_constrained_queue(repository: PrismRepository) -> None:
     scheduler = GpuLeaseScheduler(
         repository.database,
-        (PlatformGpuTarget(id="target-a", server="server-a", gpu_count=1),),
+        (BaseGpuTarget(id="target-a", server="server-a", gpu_count=1),),
     )
     first_request = GpuLeaseRequest(
         submission_id="submission-1",
@@ -129,7 +129,7 @@ async def test_fifo_constrained_queue(repository: PrismRepository) -> None:
 async def test_release_on_failed_job_frees_capacity(repository: PrismRepository) -> None:
     scheduler = GpuLeaseScheduler(
         repository.database,
-        (PlatformGpuTarget(id="target-a", server="server-a", gpu_count=1),),
+        (BaseGpuTarget(id="target-a", server="server-a", gpu_count=1),),
     )
     first = await scheduler.enqueue_or_allocate(
         GpuLeaseRequest(
@@ -186,7 +186,7 @@ async def test_legacy_database_without_gpu_leases_migrates(tmp_path) -> None:
     await database.init()
     scheduler = GpuLeaseScheduler(
         database,
-        (PlatformGpuTarget(id="legacy-target", server="legacy-server", gpu_count=1),),
+        (BaseGpuTarget(id="legacy-target", server="legacy-server", gpu_count=1),),
     )
     lease = await scheduler.enqueue_or_allocate(
         GpuLeaseRequest(

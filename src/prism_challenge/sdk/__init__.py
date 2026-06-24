@@ -1,4 +1,4 @@
-"""Vendored Platform challenge SDK for Prism."""
+"""Vendored BASE challenge SDK for Prism."""
 
 from .app_factory import create_challenge_app
 from .config import ChallengeSettings

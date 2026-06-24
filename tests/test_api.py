@@ -59,7 +59,7 @@ def test_health_version_and_internal_auth(client):
     assert client.get("/internal/v1/get_weights").status_code == 401
     response = client.get(
         "/internal/v1/get_weights",
-        headers={"Authorization": "Bearer secret", "X-Platform-Challenge-Slug": "prism"},
+        headers={"Authorization": "Bearer secret", "X-Base-Challenge-Slug": "prism"},
     )
     assert response.status_code == 200
     assert response.json()["weights"] == {}
@@ -117,7 +117,7 @@ def test_submit_status_process_and_leaderboard(client, monkeypatch):
 
     weights = client.get(
         "/internal/v1/get_weights",
-        headers={"Authorization": "Bearer secret", "X-Platform-Challenge-Slug": "prism"},
+        headers={"Authorization": "Bearer secret", "X-Base-Challenge-Slug": "prism"},
     ).json()["weights"]
     assert weights == {"hk": 1.0}
 
@@ -277,7 +277,7 @@ def test_internal_bridge_accepts_raw_zip_submission(client):
         content=raw,
         headers={
             "Authorization": "Bearer secret",
-            "X-Platform-Verified-Hotkey": "hk-bridge",
+            "X-Base-Verified-Hotkey": "hk-bridge",
             "X-Submission-Filename": "project.zip",
             "Content-Type": "application/zip",
         },

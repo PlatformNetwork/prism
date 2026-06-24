@@ -2,10 +2,10 @@
 
 ## Purpose
 
-PRISM lets validators operate an "ability to learn" challenge for Platform. Validators accept signed
+PRISM lets validators operate an "ability to learn" challenge for BASE. Validators accept signed
 miner submissions, run the static sandbox and the OpenRouter LLM hard gate, re-execute the miner's
 training loop under a forced random init on locked data, compute the prequential bits-per-byte score
-themselves, and expose normalized dry-run weights to Platform.
+themselves, and expose normalized dry-run weights to BASE.
 
 ## Responsibilities
 
@@ -16,7 +16,7 @@ Validators are responsible for:
 * keeping the locked `val`/`test` splits secret and never exposing them to a miner script;
 * forcing the seed and deterministic flags so runs reproduce;
 * computing the score from the challenge-owned capture, never trusting miner-reported numbers;
-* protecting shared Platform, broker, and OpenRouter tokens;
+* protecting shared BASE, broker, and OpenRouter tokens;
 * monitoring scoring, rejections, failures, quarantine, and exported weights.
 
 ## Evaluation Lifecycle
@@ -31,7 +31,7 @@ Validators are responsible for:
    captures the single-pass online loss itself.
 8. PRISM computes the prequential bits-per-byte score, the held-out delta tie-breaker, and the
    anti-memorization gap, and writes `prism_run_manifest.v2.json`.
-9. Scores persist; the leaderboard ranks by `final_score`; Platform reads normalized dry-run weights.
+9. Scores persist; the leaderboard ranks by `final_score`; BASE reads normalized dry-run weights.
 
 ## Runtime Configuration
 
@@ -77,17 +77,17 @@ winning.
 | Setting | Purpose |
 | --- | --- |
 | `PRISM_DATABASE_URL` | Persistent SQLite storage location. |
-| `PRISM_SHARED_TOKEN` / `PRISM_SHARED_TOKEN_FILE` | Shared token for Platform internal calls (prefer file delivery). |
+| `PRISM_SHARED_TOKEN` / `PRISM_SHARED_TOKEN_FILE` | Shared token for BASE internal calls (prefer file delivery). |
 | `PRISM_PUBLIC_SUBMISSIONS_ENABLED` | Enables the direct public miner submission route. |
 | `PRISM_SIGNATURE_TTL_SECONDS` | Replay-protection timestamp window. |
 | `PRISM_EPOCH_SECONDS` | Scoring epoch length. |
 | `PRISM_MAX_CODE_BYTES` | Maximum submission size. |
 | `PRISM_MAX_PARAMETERS` | Hard parameter cap (default 150M). |
-| `PRISM_PLATFORM_EVAL_IMAGE` | Augmented `prism-evaluator` image (sentencepiece + offline tiktoken). |
-| `PRISM_PLATFORM_EVAL_DATA_DIR` | Read-only locked FineWeb-Edu **train** mount. |
-| `PRISM_PLATFORM_EVAL_VAL_DATA_DIR` | Secret held-out **val** split (scorer-only; never mounted into the eval container). |
-| `PRISM_PLATFORM_EVAL_MAX_GPU_COUNT` | Maximum GPU count (default and hard max 8). |
-| `PRISM_PLATFORM_EVAL_GPU_COUNT` | Scored GPU count (default 1; the `nproc=1` path). |
+| `PRISM_BASE_EVAL_IMAGE` | Augmented `prism-evaluator` image (sentencepiece + offline tiktoken). |
+| `PRISM_BASE_EVAL_DATA_DIR` | Read-only locked FineWeb-Edu **train** mount. |
+| `PRISM_BASE_EVAL_VAL_DATA_DIR` | Secret held-out **val** split (scorer-only; never mounted into the eval container). |
+| `PRISM_BASE_EVAL_MAX_GPU_COUNT` | Maximum GPU count (default and hard max 8). |
+| `PRISM_BASE_EVAL_GPU_COUNT` | Scored GPU count (default 1; the `nproc=1` path). |
 | `PRISM_DISTRIBUTED_CONTRACT_POLICY` | `reject` / `flag` / `off` for the multi-GPU static contract. |
 | `PRISM_LLM_REVIEW_ENABLED` | Enables the OpenRouter LLM hard gate (default on). |
 | `PRISM_OPENROUTER_MODEL` | LLM model (default `openai/gpt-4o`). |
@@ -121,14 +121,14 @@ GET /v1/training-variants
 GET /v1/epochs/current
 ```
 
-## Platform Contract
+## BASE Contract
 
 ```http
 GET /health
 GET /version
 GET /internal/v1/get_weights
 Authorization: Bearer <shared-token>
-X-Platform-Challenge-Slug: prism
+X-Base-Challenge-Slug: prism
 ```
 
 `get_weights` returns one normalized weight per hotkey (best submission per hotkey). Weights are
@@ -159,7 +159,7 @@ During operation:
 * monitor rejected, failed, quarantined, and completed submissions separately;
 * keep epoch settings stable during active rounds;
 * keep the `val`/`test` splits secret and the eval container on `network=none`;
-* keep broker, Platform, and OpenRouter tokens out of logs;
+* keep broker, BASE, and OpenRouter tokens out of logs;
 * confirm no on-chain weight-setter exists (weights stay dry-run).
 
 ## Security Checklist

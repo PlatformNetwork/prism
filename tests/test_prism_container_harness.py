@@ -323,7 +323,7 @@ def _evaluator(tmp_path: Path) -> PrismContainerEvaluator:
     settings = PrismSettings(
         database_url=f"sqlite+aiosqlite:///{tmp_path / 'harness.sqlite3'}",
         shared_token="secret",
-        platform_eval_artifact_root=tmp_path / "artifacts",
+        base_eval_artifact_root=tmp_path / "artifacts",
     )
     ctx = PrismContext(vocab_size=32, sequence_length=16, seed=4242)
     return PrismContainerEvaluator(settings=settings, ctx=ctx)
@@ -352,7 +352,7 @@ def test_container_payload_uses_locked_data_dir_and_loopback(tmp_path):
 
 def test_container_env_sets_loopback_and_locked_data(tmp_path):
     ev = _evaluator(tmp_path)
-    env = ev._env("sub-1", "h1", "a1", "platform_gpu")
+    env = ev._env("sub-1", "h1", "a1", "base_gpu")
     assert env["MASTER_ADDR"] == "127.0.0.1"
     assert env["MASTER_PORT"] == "29500"
     assert env["PRISM_DATA_DIR"] == "/data/fineweb-edu/train"

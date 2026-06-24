@@ -74,7 +74,7 @@ def test_removed_legacy_remote_provider_backend_is_rejected(tmp_path):
         raise AssertionError("remote_provider must not be supported")
 
 
-def test_platform_gpu_worker_runs_submission_in_container(tmp_path, monkeypatch):
+def test_base_gpu_worker_runs_submission_in_container(tmp_path, monkeypatch):
     captured = {}
 
     def fake_run(self, spec, timeout_seconds):
@@ -92,27 +92,27 @@ def test_platform_gpu_worker_runs_submission_in_container(tmp_path, monkeypatch)
 
     monkeypatch.setattr("prism_challenge.evaluator.container.DockerExecutor.run", fake_run)
     settings = PrismSettings(
-        database_url=f"sqlite+aiosqlite:///{tmp_path / 'platform-gpu.sqlite3'}",
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'base-gpu.sqlite3'}",
         shared_token="secret",
         allow_insecure_signatures=True,
         # No OpenRouter key in the unit env; disable the gate (covered in test_*llm*).
         llm_review_enabled=False,
-        execution_backend="platform_gpu",
+        execution_backend="base_gpu",
         docker_enabled=True,
         docker_backend="broker",
-        docker_broker_url="http://platform-docker-broker:8082",
+        docker_broker_url="http://base-docker-broker:8082",
         docker_broker_token="secret",
-        platform_eval_cpus=3.0,
-        platform_eval_memory="12g",
-        platform_eval_gpu_count=2,
-        platform_eval_gpu_type="l4",
+        base_eval_cpus=3.0,
+        base_eval_memory="12g",
+        base_eval_gpu_count=2,
+        base_eval_gpu_type="l4",
         plagiarism_enabled=False,
         # Single-process training double; the multi-GPU static contract (default reject) is
         # exercised explicitly in test_prism_distributed_contract.py.
         distributed_contract_policy="off",
     )
     with TestClient(create_app(settings)) as client:
-        submission_id = _submit(client, REMOTE_ONLY_CODE, nonce="platform-gpu")
+        submission_id = _submit(client, REMOTE_ONLY_CODE, nonce="base-gpu")
         process = client.post(
             "/internal/v1/worker/process-next",
             headers={"Authorization": "Bearer secret"},
@@ -126,10 +126,10 @@ def test_platform_gpu_worker_runs_submission_in_container(tmp_path, monkeypatch)
         assert float(status["q_arch"]) > 0.0
 
     spec = captured["spec"]
-    assert spec.image == "ghcr.io/platformnetwork/prism-evaluator:latest"
-    assert spec.labels["platform.job"] == submission_id
-    assert spec.labels["platform.task"] == "architecture"
-    assert spec.env["PRISM_EXECUTION_BACKEND"] == "platform_gpu"
+    assert spec.image == "ghcr.io/baseintelligence/prism-evaluator:latest"
+    assert spec.labels["base.job"] == submission_id
+    assert spec.labels["base.task"] == "architecture"
+    assert spec.env["PRISM_EXECUTION_BACKEND"] == "base_gpu"
     assert spec.env["PRISM_GPU_COUNT"] == "2"
     assert spec.env["PRISM_GPU_TYPE"] == "l4"
     assert spec.limits.cpus == 3.0
@@ -145,19 +145,19 @@ def test_platform_gpu_worker_runs_submission_in_container(tmp_path, monkeypatch)
     assert captured["payload"]["context"]["data_dir"] == "/data/fineweb-edu/train"
     # The outer docker/broker cap is the hard timeout, forced strictly above the graceful
     # wall-clock budget + watchdog grace so the runner can stop gracefully first.
-    assert captured["timeout_seconds"] == settings.platform_eval_hard_timeout_seconds
-    assert captured["payload"]["context"]["budget_seconds"] == settings.platform_eval_budget_seconds
+    assert captured["timeout_seconds"] == settings.base_eval_hard_timeout_seconds
+    assert captured["payload"]["context"]["budget_seconds"] == settings.base_eval_budget_seconds
     assert (
         captured["payload"]["context"]["watchdog_grace_seconds"]
-        == settings.platform_eval_watchdog_grace_seconds
+        == settings.base_eval_watchdog_grace_seconds
     )
     assert (
         captured["payload"]["context"]["artifacts_quota_bytes"]
-        == settings.platform_eval_artifacts_quota_bytes
+        == settings.base_eval_artifacts_quota_bytes
     )
 
 
-def test_platform_gpu_rejects_sandbox_violations_before_container(tmp_path, monkeypatch):
+def test_base_gpu_rejects_sandbox_violations_before_container(tmp_path, monkeypatch):
     def fail_run(self, spec, timeout_seconds):
         raise AssertionError("container should not run")
 
@@ -172,20 +172,20 @@ def get_recipe(ctx):
     return {}
 """
     settings = PrismSettings(
-        database_url=f"sqlite+aiosqlite:///{tmp_path / 'platform-gpu-reject.sqlite3'}",
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'base-gpu-reject.sqlite3'}",
         shared_token="secret",
         allow_insecure_signatures=True,
         # No OpenRouter key in the unit env; disable the gate (covered in test_*llm*).
         llm_review_enabled=False,
-        execution_backend="platform_gpu",
+        execution_backend="base_gpu",
         docker_enabled=True,
         docker_backend="broker",
-        docker_broker_url="http://platform-docker-broker:8082",
+        docker_broker_url="http://base-docker-broker:8082",
         docker_broker_token="secret",
         plagiarism_enabled=False,
     )
     with TestClient(create_app(settings)) as client:
-        submission_id = _submit(client, code, nonce="platform-gpu-reject")
+        submission_id = _submit(client, code, nonce="base-gpu-reject")
         process = client.post(
             "/internal/v1/worker/process-next",
             headers={"Authorization": "Bearer secret"},
@@ -196,12 +196,12 @@ def get_recipe(ctx):
         assert "forbidden imports: os" in status["error"]
 
 
-def test_platform_gpu_version_advertises_docker_executor(tmp_path):
+def test_base_gpu_version_advertises_docker_executor(tmp_path):
     settings = PrismSettings(
-        database_url=f"sqlite+aiosqlite:///{tmp_path / 'platform-gpu-version.sqlite3'}",
+        database_url=f"sqlite+aiosqlite:///{tmp_path / 'base-gpu-version.sqlite3'}",
         shared_token="secret",
         allow_insecure_signatures=True,
-        execution_backend="platform_gpu",
+        execution_backend="base_gpu",
     )
     with TestClient(create_app(settings)) as client:
         version = client.get("/version").json()
@@ -265,7 +265,7 @@ def train_step(model, batch, optimizer, ctx):
 """
 
 
-def test_platform_gpu_accepts_custom_training_and_inference_hooks(tmp_path, monkeypatch):
+def test_base_gpu_accepts_custom_training_and_inference_hooks(tmp_path, monkeypatch):
     def fake_run(self, spec, timeout_seconds):
         _write_v2_manifest(spec)
         return DockerRunResult(
@@ -282,10 +282,10 @@ def test_platform_gpu_accepts_custom_training_and_inference_hooks(tmp_path, monk
         allow_insecure_signatures=True,
         # No OpenRouter key in the unit env; disable the gate (covered in test_*llm*).
         llm_review_enabled=False,
-        execution_backend="platform_gpu",
+        execution_backend="base_gpu",
         docker_enabled=True,
         docker_backend="broker",
-        docker_broker_url="http://platform-docker-broker:8082",
+        docker_broker_url="http://base-docker-broker:8082",
         docker_broker_token="secret",
         sequence_length=16,
         plagiarism_enabled=False,

@@ -18,7 +18,7 @@ contract is set to ``off`` so a minimal training double passes the static gates;
 both are exercised in their own test suites.
 
 The scored forced-init re-execution is GPU-only: this driver runs with NO GPU
-target (``platform_gpu_targets='[]'``), so the GPU lease cannot be satisfied and
+target (``base_gpu_targets='[]'``), so the GPU lease cannot be satisfied and
 the submission bounces back to ``pending`` rather than completing. That is the
 EXPECTED local outcome -- the harness proves the static + review path and the
 guard rails, not the GPU re-execution (that lives in the live GPU drive).
@@ -110,7 +110,7 @@ def build_settings(db_path: Path, *, public_flag: bool) -> PrismSettings:
         distributed_contract_policy="off",
         # No GPU target locally: the scored re-execution lease cannot be satisfied, so the
         # submission bounces to pending rather than blocking on a container eval.
-        platform_gpu_targets="[]",
+        base_gpu_targets="[]",
     )
 
 

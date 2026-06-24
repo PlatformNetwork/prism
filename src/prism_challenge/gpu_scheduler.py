@@ -15,7 +15,7 @@ GpuLeaseStatus = Literal["queued", "active", "released"]
 
 
 @dataclass(frozen=True)
-class PlatformGpuTarget:
+class BaseGpuTarget:
     id: str
     server: str | None = None
     enabled: bool = True
@@ -76,7 +76,7 @@ class GpuLease:
 
 
 class GpuLeaseScheduler:
-    def __init__(self, database: Database, targets: tuple[PlatformGpuTarget, ...]) -> None:
+    def __init__(self, database: Database, targets: tuple[BaseGpuTarget, ...]) -> None:
         self.database = database
         self.targets = targets
 
@@ -235,17 +235,17 @@ def lease_request_from_runtime(
 
 def targets_from_settings(
     settings: PrismSettings, runtime_policy: RuntimePolicy
-) -> tuple[PlatformGpuTarget, ...]:
-    raw_targets = settings.platform_gpu_targets
+) -> tuple[BaseGpuTarget, ...]:
+    raw_targets = settings.base_gpu_targets
     if raw_targets:
         payload = loads(raw_targets)
         if not isinstance(payload, list):
-            raise ValueError("platform_gpu_targets must be a JSON list")
+            raise ValueError("base_gpu_targets must be a JSON list")
         return tuple(_target_from_mapping(cast(dict[str, Any], item)) for item in payload)
     return (
-        PlatformGpuTarget(
-            id="local-platform",
-            server="local-platform",
+        BaseGpuTarget(
+            id="local-base",
+            server="local-base",
             enabled=True,
             draining=False,
             gpu_count=max(1, int(runtime_policy.gpu_policy.actual_gpu_count)),
@@ -253,8 +253,8 @@ def targets_from_settings(
     )
 
 
-def _target_from_mapping(item: dict[str, Any]) -> PlatformGpuTarget:
-    return PlatformGpuTarget(
+def _target_from_mapping(item: dict[str, Any]) -> BaseGpuTarget:
+    return BaseGpuTarget(
         id=str(item["id"]),
         server=str(item.get("server") or item.get("api_url") or item["id"]),
         enabled=bool(item.get("enabled", True)),
@@ -265,9 +265,9 @@ def _target_from_mapping(item: dict[str, Any]) -> PlatformGpuTarget:
 
 def _choose_allocation(
     lease: GpuLease,
-    targets: tuple[PlatformGpuTarget, ...],
+    targets: tuple[BaseGpuTarget, ...],
     leased: dict[str, set[str]],
-) -> tuple[PlatformGpuTarget, tuple[str, ...]] | None:
+) -> tuple[BaseGpuTarget, tuple[str, ...]] | None:
     if lease.score_eligible or not lease.autosplit_allowed:
         candidate_counts: tuple[int, ...] = (lease.requested_gpu_count,)
     else:

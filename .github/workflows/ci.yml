@@ -18,8 +18,8 @@ permissions:
   contents: read
 
 env:
-  SERVICE_IMAGE_NAME: ghcr.io/platformnetwork/prism
-  EVALUATOR_IMAGE_NAME: ghcr.io/platformnetwork/prism-evaluator
+  SERVICE_IMAGE_NAME: ghcr.io/baseintelligence/prism
+  EVALUATOR_IMAGE_NAME: ghcr.io/baseintelligence/prism-evaluator
 
 jobs:
   lint:
@@ -56,9 +56,9 @@ jobs:
     strategy:
       matrix:
         include:
-          - image: ghcr.io/platformnetwork/prism
+          - image: ghcr.io/baseintelligence/prism
             target: service
-          - image: ghcr.io/platformnetwork/prism-evaluator
+          - image: ghcr.io/baseintelligence/prism-evaluator
             target: evaluator
     steps:
       - uses: actions/checkout@v4
@@ -158,15 +158,15 @@ jobs:
           body: |
             ## Container Images
 
-            - `ghcr.io/platformnetwork/prism:${{ steps.release.outputs.version }}`
-            - `ghcr.io/platformnetwork/prism:${{ github.ref_name }}`
-            - `ghcr.io/platformnetwork/prism:sha-${{ github.sha }}`
-            - `ghcr.io/platformnetwork/prism-evaluator:${{ steps.release.outputs.version }}`
-            - `ghcr.io/platformnetwork/prism-evaluator:${{ github.ref_name }}`
-            - `ghcr.io/platformnetwork/prism-evaluator:sha-${{ github.sha }}`
+            - `ghcr.io/baseintelligence/prism:${{ steps.release.outputs.version }}`
+            - `ghcr.io/baseintelligence/prism:${{ github.ref_name }}`
+            - `ghcr.io/baseintelligence/prism:sha-${{ github.sha }}`
+            - `ghcr.io/baseintelligence/prism-evaluator:${{ steps.release.outputs.version }}`
+            - `ghcr.io/baseintelligence/prism-evaluator:${{ github.ref_name }}`
+            - `ghcr.io/baseintelligence/prism-evaluator:sha-${{ github.sha }}`
 
             ## Deployment Notes
 
-            Platform master deployments should pin the SemVer image tag plus the
+            BASE master deployments should pin the SemVer image tag plus the
             immutable `@sha256` digest. The `latest` tag is published only from
             `main`, not from release tags.

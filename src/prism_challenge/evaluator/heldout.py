@@ -42,7 +42,7 @@ from .scoring import MEMORIZATION_GAP_THRESHOLD_BPB
 
 # Raised from the original 120s: a 150M-param model forward over the bounded val subsample on the
 # manager CPU needs headroom above 120s, while the byte budget keeps the absolute compute small.
-# Configurable per-deploy via ``PrismSettings.platform_eval_heldout_timeout_seconds``.
+# Configurable per-deploy via ``PrismSettings.base_eval_heldout_timeout_seconds``.
 DEFAULT_TIMEOUT_SECONDS = 600.0
 DEFAULT_MEMORY_HEADROOM_BYTES = 8 * 1024**3
 DEFAULT_HELDOUT_BATCH_SIZE = 8
@@ -51,7 +51,7 @@ DEFAULT_HELDOUT_BATCH_SIZE = 8
 # document). Both the random-init twin and the trained model see the IDENTICAL prefix, so the delta
 # stays comparable and directionally correct while the host-side eval completes within budget. A
 # value <= 0 disables the cap (scores the entire val split). Configurable per-deploy via
-# ``PrismSettings.platform_eval_heldout_val_byte_budget``.
+# ``PrismSettings.base_eval_heldout_val_byte_budget``.
 DEFAULT_HELDOUT_VAL_BYTE_BUDGET = 65536
 # A NaN/Inf held-out batch loss is sanitized to a worst-case (high) per-batch code-length so a
 # degenerate model can never collapse into a finite, advantageous held-out bpb.

@@ -34,28 +34,28 @@ def _evaluator(**overrides) -> PrismContainerEvaluator:
 
 def test_hard_timeout_property_sits_above_budget_plus_grace_and_timeout():
     settings = _settings(
-        platform_eval_budget_seconds=1200,
-        platform_eval_watchdog_grace_seconds=120,
-        platform_eval_timeout_seconds=1800,
+        base_eval_budget_seconds=1200,
+        base_eval_watchdog_grace_seconds=120,
+        base_eval_timeout_seconds=1800,
     )
     # The outer docker cap must give the runner's graceful budget + hard watchdog time to fire.
-    assert settings.platform_eval_hard_timeout_seconds >= 1200 + 120
-    assert settings.platform_eval_hard_timeout_seconds >= settings.platform_eval_timeout_seconds
+    assert settings.base_eval_hard_timeout_seconds >= 1200 + 120
+    assert settings.base_eval_hard_timeout_seconds >= settings.base_eval_timeout_seconds
 
     tight = _settings(
-        platform_eval_budget_seconds=600,
-        platform_eval_watchdog_grace_seconds=60,
-        platform_eval_timeout_seconds=300,
+        base_eval_budget_seconds=600,
+        base_eval_watchdog_grace_seconds=60,
+        base_eval_timeout_seconds=300,
     )
     # Even with a small configured outer timeout, the floor keeps it above budget + grace.
-    assert tight.platform_eval_hard_timeout_seconds == 600 + 60 + 60
+    assert tight.base_eval_hard_timeout_seconds == 600 + 60 + 60
 
 
 def test_payload_context_carries_budget_grace_and_quota():
     settings = _settings(
-        platform_eval_budget_seconds=900,
-        platform_eval_watchdog_grace_seconds=90,
-        platform_eval_artifacts_quota_bytes=123456,
+        base_eval_budget_seconds=900,
+        base_eval_watchdog_grace_seconds=90,
+        base_eval_artifacts_quota_bytes=123456,
     )
     evaluator = PrismContainerEvaluator(settings=settings, ctx=PrismContext(sequence_length=16))
     payload = evaluator._payload(
@@ -117,7 +117,7 @@ def _raise_via_fake_run(monkeypatch, result: DockerRunResult, **settings_overrid
             code=CONTRACT_CODE,
             code_hash="code",
             arch_hash="arch",
-            backend="platform_gpu",
+            backend="base_gpu",
         )
     return raised.value
 
@@ -158,9 +158,9 @@ def test_docker_timeout_lands_failed_with_budget_reason(monkeypatch):
     error = _raise_via_fake_run(
         monkeypatch,
         DockerRunResult("prism-eval", "", "", 124, timed_out=True),
-        platform_eval_budget_seconds=2,
-        platform_eval_watchdog_grace_seconds=1,
-        platform_eval_timeout_seconds=5,
+        base_eval_budget_seconds=2,
+        base_eval_watchdog_grace_seconds=1,
+        base_eval_timeout_seconds=5,
     )
     assert error.evidence[0].rule_id == "prism:budget-exceeded"
     assert "safety cap" in str(error)

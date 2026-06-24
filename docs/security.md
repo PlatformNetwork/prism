@@ -6,7 +6,7 @@ and a forced-init re-execution that makes the common cheats inert rather than me
 
 ## Identity and Upload Security
 
-Miner-facing uploads are handled by Platform, which verifies hotkey identity, signatures, timestamps,
+Miner-facing uploads are handled by BASE, which verifies hotkey identity, signatures, timestamps,
 nonces, request freshness, and challenge routing before forwarding the payload to PRISM:
 
 ```text
@@ -17,7 +17,7 @@ PRISM trusts the verified hotkey header only on authenticated internal requests.
 
 ## Internal Authentication
 
-Internal endpoints require the shared Platform challenge token:
+Internal endpoints require the shared BASE challenge token:
 
 ```text
 Authorization: Bearer <shared-token>
@@ -115,7 +115,7 @@ Weights are normalized per hotkey from the bits-per-byte `final_score` and expos
 ## Operational Guidance
 
 * Use real secret files in production, not inline tokens.
-* Keep public submissions disabled when PRISM is deployed only behind Platform.
+* Keep public submissions disabled when PRISM is deployed only behind BASE.
 * Keep the eval container on `network=none` and the rootfs read-only except `artifacts_dir`.
 * Keep the OpenRouter LLM hard gate enabled for production operation.
 * Monitor rejected, held, failed, and completed submissions separately.

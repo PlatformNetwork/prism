@@ -143,8 +143,8 @@ def _v2_manifest(*, vocab: int, record_trained_state: bool) -> dict:
 
 def _evaluator(val_dir: Path, artifact_root: Path) -> PrismContainerEvaluator:
     settings = PrismSettings(
-        platform_eval_val_data_dir=str(val_dir),
-        platform_eval_artifact_root=artifact_root,
+        base_eval_val_data_dir=str(val_dir),
+        base_eval_artifact_root=artifact_root,
     )
     ctx = PrismContext(vocab_size=128, sequence_length=16, seed=1337, max_parameters=5_000_000)
     return PrismContainerEvaluator(settings=settings, ctx=ctx)

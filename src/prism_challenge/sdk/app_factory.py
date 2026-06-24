@@ -44,8 +44,8 @@ def create_challenge_app(
         capabilities = ["get_weights", "proxy_routes", "sqlite"]
         backend = getattr(settings, "execution_backend", "")
         if settings.docker_enabled or backend in {
-            "platform_container",
-            "platform_gpu",
+            "base_container",
+            "base_gpu",
             "container_gpu",
             "docker_gpu",
         }:

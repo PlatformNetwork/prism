@@ -23,7 +23,7 @@ def load_shared_token(settings: ChallengeSettings) -> str | None:
 def build_internal_auth_dependency(settings: ChallengeSettings):
     async def verify_internal_auth(
         authorization: str | None = Header(default=None),
-        challenge_slug: str | None = Header(default=None, alias="X-Platform-Challenge-Slug"),
+        challenge_slug: str | None = Header(default=None, alias="X-Base-Challenge-Slug"),
     ) -> None:
         expected_token = load_shared_token(settings)
         if expected_token is None:

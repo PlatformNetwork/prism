@@ -25,8 +25,8 @@ REJECTION_PATTERNS = [
 ]
 
 SAFETY_REVIEW_SYSTEM = (
-    "You are a strict security and integrity reviewer and a HARD GATE for a Platform "
-    "Network 'ability-to-learn' ML subnet. Each submission is TWO scripts -- architecture.py "
+    "You are a strict security and integrity reviewer and a HARD GATE for a BASE "
+    "'ability-to-learn' ML subnet. Each submission is TWO scripts -- architecture.py "
     "(the model factory) and training.py (the miner's from-scratch learning loop) -- "
     "concatenated below with `# file:` headers; you MUST review BOTH scripts together. "
     "You must call SubmitMermaid first, then SubmitVerdict exactly once. verdict=true ALLOWS "
@@ -333,7 +333,7 @@ def review_plagiarism(
         review = _invoke_review_flow(
             config,
             system=(
-                "You are a plagiarism adjudicator for a Platform Network subnet. "
+                "You are a plagiarism adjudicator for a BASE subnet. "
                 "You must call SubmitMermaid first, then SubmitVerdict exactly once. "
                 "For this plagiarism review, "
                 "verdict=true means the current submission is copied or plagiarized "

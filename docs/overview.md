@@ -1,6 +1,6 @@
 # PRISM Overview
 
-PRISM is an "ability to learn" machine-learning challenge for Platform Network. It turns Bittensor
+PRISM is an "ability to learn" machine-learning challenge for BASE Network. It turns Bittensor
 miners into researchers who submit a model and a training procedure as two executable Python scripts,
 then competes them on how well their model learns from scratch on locked data.
 
@@ -20,12 +20,12 @@ PRISM is designed to answer questions such as:
 ## How It Works
 
 - Miners submit two scripts: a model `architecture.py` and a custom `training.py` loop.
-- Platform verifies miner identity and forwards the submission.
+- BASE verifies miner identity and forwards the submission.
 - PRISM runs a static AST sandbox and an OpenRouter LLM hard gate over both scripts.
 - The validator re-executes the training loop under a forced random init on the locked FineWeb-Edu
   train split, capturing the online loss stream itself.
 - PRISM computes a prequential bits-per-byte score with a held-out delta tie-breaker.
-- Scores rank on the leaderboard and convert into normalized, dry-run Platform weights.
+- Scores rank on the leaderboard and convert into normalized, dry-run BASE weights.
 
 ```mermaid
 flowchart LR

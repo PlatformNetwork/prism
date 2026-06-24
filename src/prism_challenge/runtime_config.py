@@ -254,9 +254,9 @@ def runtime_policy_defaults(settings: PrismSettings) -> dict[str, Any]:
             "evidence_required_for_rejection": True,
         },
         "gpu_policy": {
-            "max_gpu_count": settings.platform_eval_max_gpu_count,
-            "actual_gpu_count": settings.platform_eval_gpu_count,
-            "gpu_type": settings.platform_eval_gpu_type,
+            "max_gpu_count": settings.base_eval_max_gpu_count,
+            "actual_gpu_count": settings.base_eval_gpu_count,
+            "gpu_type": settings.base_eval_gpu_type,
             "official_fixed_profile": True,
             "allocation_policy": "fixed_official_profile",
         },

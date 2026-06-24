@@ -248,7 +248,7 @@ def _enforcing_client(tmp_path) -> TestClient:
         fineweb_sample_count=4,
         plagiarism_enabled=False,
         llm_review_enabled=False,
-        platform_gpu_targets="[]",
+        base_gpu_targets="[]",
         distributed_contract_policy="reject",
     )
     return TestClient(create_app(settings))

@@ -10,7 +10,7 @@
 # the previous single-image consumer (uvicorn app on port 8080).
 #
 # NOTE: every stage that runs `pip install .` MUST have `git` installed, because
-# pyproject.toml pulls `platform-network @ git+https://github.com/BaseIntelligence/platform.git`.
+# pyproject.toml pulls `base @ git+https://github.com/BaseIntelligence/base.git`.
 
 ############################################################
 # evaluator target — CUDA-capable image (cu128 series) that
@@ -46,7 +46,7 @@ COPY src ./src
 
 # Install the CUDA-enabled torch from the cu128 channel FIRST, so the package
 # install below resolves `torch>=2.3` against the GPU build (not the CPU wheel),
-# then install the package (brings numpy, platform-network and runner deps).
+# then install the package (brings numpy, base and runner deps).
 # sentencepiece + tiktoken back the llama / gpt2 reference tokenizers (also pinned in
 # pyproject.toml, installed here explicitly so the eval image always carries them).
 RUN pip install --no-cache-dir --upgrade pip \
@@ -96,7 +96,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# git: required for the `platform-network @ git+https://...` dependency clone.
+# git: required for the `base @ git+https://...` dependency clone.
 # docker-cli: the service shells out to the docker broker.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git docker-cli \

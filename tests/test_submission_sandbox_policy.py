@@ -98,7 +98,7 @@ def test_artifact_size_limit_fails_before_container_run(monkeypatch) -> None:
             code="",
             code_hash="code",
             arch_hash="arch",
-            backend="platform_gpu",
+            backend="base_gpu",
             files=(oversized,),
         )
 
@@ -120,9 +120,9 @@ def test_timeout_resource_violation_has_deterministic_evidence(monkeypatch) -> N
             docker_backend="broker",
             docker_broker_url="http://broker",
             docker_broker_token="token",
-            platform_eval_budget_seconds=2,
-            platform_eval_watchdog_grace_seconds=1,
-            platform_eval_timeout_seconds=7,
+            base_eval_budget_seconds=2,
+            base_eval_watchdog_grace_seconds=1,
+            base_eval_timeout_seconds=7,
         ),
         ctx=PrismContext(sequence_length=16),
     )
@@ -135,7 +135,7 @@ def test_timeout_resource_violation_has_deterministic_evidence(monkeypatch) -> N
             code="def build_model(ctx): pass\ndef get_recipe(ctx): return {}",
             code_hash="code",
             arch_hash="arch",
-            backend="platform_gpu",
+            backend="base_gpu",
         )
 
     evidence = raised.value.evidence[0]
