@@ -153,7 +153,7 @@ class ExecutionModeTargets(BaseModel):
 class ArtifactLimits(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    max_code_bytes: int = Field(default=200_000, ge=1)
+    max_code_bytes: int = Field(default=7_500_000, ge=1)
     max_files: int = Field(default=200, ge=1)
     max_bytes: int = Field(default=2_000_000, ge=1)
     required_manifest_name: str = RUN_MANIFEST_V2_FILENAME

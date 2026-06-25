@@ -112,6 +112,7 @@ def test_example_config_parses_with_nas_defaults() -> None:
     settings = PrismSettings(**payload)
 
     assert settings.slug == "prism"
+    assert settings.max_code_bytes == 7_500_000
     assert settings.execution_backend == "base_gpu"
     assert settings.public_submissions_enabled is True
     assert settings.arch_weight == 0.7

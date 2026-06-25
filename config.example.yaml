@@ -9,7 +9,7 @@ shared_token_file: /run/secrets/base/challenge_token
 allow_insecure_signatures: false
 signature_ttl_seconds: 300
 epoch_seconds: 21600
-max_code_bytes: 200000
+max_code_bytes: 7500000
 max_parameters: 150000000
 max_layers: 96
 max_sequence_length: 512
