@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
 from prism_challenge.evaluator.interface import (
     ARCHITECTURE_FACTORY_NAME,
     DEFAULT_ARCHITECTURE_ENTRYPOINT,
@@ -227,3 +229,17 @@ def test_api_doc_only_lists_live_internal_routes() -> None:
         "/internal/v1/validators/assignments",
     ):
         assert removed_route not in api
+
+
+def test_dead_nas_component_routes_are_removed(client: TestClient) -> None:
+    """The v1-NAS ``/v1/architectures`` and ``/v1/training-variants`` endpoints were dead.
+
+    Their writers were removed in the NAS decommission (commit ``12376e6``); the
+    ``architecture_families`` / ``training_variants`` tables are never populated, so both
+    routes returned ``[]`` forever and misled consumers. This contract pins their removal:
+    requesting either path now yields ``404 Not Found`` (no route registered).
+    """
+
+    for removed_route in ("/v1/architectures", "/v1/training-variants"):
+        response = client.get(removed_route)
+        assert response.status_code == 404, (removed_route, response.text)

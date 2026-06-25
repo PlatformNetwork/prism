@@ -644,29 +644,6 @@ class PrismRepository:
         rows = await self.active_runtime_config_rows()
         return resolve_runtime_policy(settings, rows, allow_sql_fallback=not official)
 
-    async def list_architectures(self, limit: int = 50) -> list[dict[str, object]]:
-        async with self.database.connect() as conn:
-            rows = await conn.execute_fetchall(
-                "SELECT * FROM architecture_families ORDER BY q_arch_best DESC, created_at LIMIT ?",
-                (limit,),
-            )
-        return [dict(row) for row in rows]
-
-    async def list_training_variants(
-        self, architecture_id: str | None = None, limit: int = 100
-    ) -> list[dict[str, object]]:
-        query = "SELECT * FROM training_variants"
-        params: tuple[object, ...]
-        if architecture_id is not None:
-            query += " WHERE architecture_id=?"
-            params = (architecture_id, limit)
-        else:
-            params = (limit,)
-        query += " ORDER BY is_current_best DESC, metric_mean DESC, created_at LIMIT ?"
-        async with self.database.connect() as conn:
-            rows = await conn.execute_fetchall(query, params)
-        return [dict(row) for row in rows]
-
     async def expire_stale_held(self) -> list[str]:
         # After the LLM gating inversion a reject is TERMINAL ('rejected'), so the remaining HELD
         # source is an explicit held=True quarantine (a fail-closed LLM error / plagiarism band),

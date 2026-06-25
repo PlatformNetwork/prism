@@ -8,7 +8,6 @@ from pydantic import ValidationError
 
 from .auth import authenticate_miner
 from .models import (
-    ArchitectureFamilyResponse,
     EpochResponse,
     EvalJobHealthEntry,
     GpuStatusSummary,
@@ -17,7 +16,6 @@ from .models import (
     SubmissionHistoryBucket,
     SubmissionResponse,
     SubmissionStatusResponse,
-    TrainingVariantResponse,
 )
 from .repository import PrismRepository, epoch_id_for
 from .sdk import public_route
@@ -101,54 +99,6 @@ async def leaderboard(
         for index, row in enumerate(rows)
     ]
     return LeaderboardResponse(epoch_id=resolved_epoch_id, entries=entries)
-
-
-@public_route(tags=["components"])
-@router.get("/architectures", response_model=list[ArchitectureFamilyResponse])
-async def architectures(
-    limit: int = 50, repository: PrismRepository = Depends(repo_from_request)
-) -> list[ArchitectureFamilyResponse]:
-    return [
-        ArchitectureFamilyResponse(
-            id=str(row["id"]),
-            family_hash=str(row["family_hash"]),
-            owner_hotkey=str(row["owner_hotkey"]),
-            owner_submission_id=str(row["owner_submission_id"]),
-            canonical_submission_id=str(row["canonical_submission_id"]),
-            q_arch_best=float(cast(SupportsFloat, row["q_arch_best"])),
-            created_at=datetime.fromisoformat(str(row["created_at"])),
-            updated_at=datetime.fromisoformat(str(row["updated_at"])),
-        )
-        for row in await repository.list_architectures(limit=limit)
-    ]
-
-
-@public_route(tags=["components"])
-@router.get("/training-variants", response_model=list[TrainingVariantResponse])
-async def training_variants(
-    architecture_id: str | None = None,
-    limit: int = 100,
-    repository: PrismRepository = Depends(repo_from_request),
-) -> list[TrainingVariantResponse]:
-    return [
-        TrainingVariantResponse(
-            id=str(row["id"]),
-            architecture_id=str(row["architecture_id"]),
-            training_hash=str(row["training_hash"]),
-            owner_hotkey=str(row["owner_hotkey"]),
-            submission_id=str(row["submission_id"]),
-            q_recipe=float(cast(SupportsFloat, row["q_recipe"])),
-            metric_mean=float(cast(SupportsFloat, row["metric_mean"])),
-            metric_std=float(cast(SupportsFloat, row["metric_std"])),
-            is_current_best=bool(row["is_current_best"]),
-            created_at=datetime.fromisoformat(str(row["created_at"])),
-            updated_at=datetime.fromisoformat(str(row["updated_at"])),
-        )
-        for row in await repository.list_training_variants(
-            architecture_id=architecture_id,
-            limit=limit,
-        )
-    ]
 
 
 @public_route(tags=["epochs"])
