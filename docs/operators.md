@@ -33,14 +33,14 @@ The shared token must match the token configured in the BASE master for this cha
 
 ## Docker Broker Configuration
 
-Production evaluation uses the BASE Docker broker with the augmented evaluator image:
+Production evaluation uses the BASE Docker broker with the CI-published evaluator image:
 
 ```bash
 PRISM_DOCKER_ENABLED=true
 PRISM_DOCKER_BACKEND=broker
 PRISM_DOCKER_BROKER_URL=http://base-docker-broker:8082
 PRISM_DOCKER_BROKER_TOKEN_FILE=/run/secrets/base/challenge_token
-PRISM_BASE_EVAL_IMAGE=ghcr.io/baseintelligence/prism-evaluator:augmented
+PRISM_BASE_EVAL_IMAGE=ghcr.io/baseintelligence/prism-evaluator:latest
 PRISM_BASE_EVAL_GPU_COUNT=1
 PRISM_DOCKER_NETWORK=none
 ```

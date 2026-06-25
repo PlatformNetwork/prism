@@ -83,7 +83,7 @@ winning.
 | `PRISM_EPOCH_SECONDS` | Scoring epoch length. |
 | `PRISM_MAX_CODE_BYTES` | Maximum submission size. |
 | `PRISM_MAX_PARAMETERS` | Hard parameter cap (default 150M). |
-| `PRISM_BASE_EVAL_IMAGE` | Augmented `prism-evaluator` image (sentencepiece + offline tiktoken). |
+| `PRISM_BASE_EVAL_IMAGE` | CI-published `prism-evaluator` image (ships sentencepiece + offline tiktoken). |
 | `PRISM_BASE_EVAL_DATA_DIR` | Read-only locked FineWeb-Edu **train** mount. |
 | `PRISM_BASE_EVAL_VAL_DATA_DIR` | Secret held-out **val** split (scorer-only; never mounted into the eval container). |
 | `PRISM_BASE_EVAL_MAX_GPU_COUNT` | Maximum GPU count (default and hard max 8). |
@@ -148,7 +148,7 @@ Before accepting submissions:
 
 1. Configure persistent SQLite storage.
 2. Configure shared-token delivery through files or a secret manager.
-3. Configure the broker, the augmented evaluator image, and the read-only locked-data mounts.
+3. Configure the broker, the CI-published evaluator image, and the read-only locked-data mounts.
 4. Set submission size and parameter limits.
 5. Provide the OpenRouter key (the LLM hard gate is on by default).
 6. Run `pytest tests/test_config.py -q` and the scoring/harness suites locally.
