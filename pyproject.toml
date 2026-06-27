@@ -16,7 +16,8 @@ dependencies = [
   "uvicorn[standard]>=0.30",
   "langchain-openai>=0.2.0",
   "tiktoken>=0.7",
-  "sentencepiece>=0.2"
+  "sentencepiece>=0.2",
+  "huggingface_hub>=0.24"
 ]
 
 [project.optional-dependencies]

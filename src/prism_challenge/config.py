@@ -101,9 +101,7 @@ class PrismSettings(ChallengeSettings):
     )
     openrouter_api_key_file: Path | None = Field(
         default=Path("/run/secrets/openrouter_api_key"),
-        validation_alias=AliasChoices(
-            "PRISM_OPENROUTER_API_KEY_FILE", "PRISM_CHUTES_API_KEY_FILE"
-        ),
+        validation_alias=AliasChoices("PRISM_OPENROUTER_API_KEY_FILE", "PRISM_CHUTES_API_KEY_FILE"),
     )
     hf_token: str | None = Field(
         default=None,
@@ -113,6 +111,17 @@ class PrismSettings(ChallengeSettings):
     hf_token_file: Path | None = Field(
         default=Path("/run/secrets/hf_token"),
         validation_alias=AliasChoices("PRISM_HF_TOKEN_FILE", "HF_TOKEN_FILE"),
+    )
+    # Crash-recovery checkpoint cadence (architecture.md section 7). The validator persists a
+    # training checkpoint on this cadence and pushes it to the master, which publishes it to
+    # HuggingFace; a reassigned run resumes from the last public checkpoint. Hourly by default; a
+    # smaller cadence (e.g. in tests) persists/publishes more frequently. Never part of the score.
+    checkpoint_cadence_seconds: int = Field(
+        default=3600,
+        ge=1,
+        validation_alias=AliasChoices(
+            "PRISM_CHECKPOINT_CADENCE_SECONDS", "PRISM_HF_CHECKPOINT_CADENCE_SECONDS"
+        ),
     )
     llm_review_timeout_seconds: int = 60
     held_review_timeout_seconds: int = 86400
@@ -277,9 +286,7 @@ class PrismSettings(ChallengeSettings):
     # skips the held-out delta (the run still scores on prequential bpb).
     base_eval_val_data_dir: str = Field(
         default="/data/fineweb-edu/val",
-        validation_alias=AliasChoices(
-            "PRISM_BASE_EVAL_VAL_DATA_DIR", "PRISM_EVAL_VAL_DATA_DIR"
-        ),
+        validation_alias=AliasChoices("PRISM_BASE_EVAL_VAL_DATA_DIR", "PRISM_EVAL_VAL_DATA_DIR"),
     )
     # Host-readable train split for the anti-memorization gap (architecture.md section 6.2). The
     # held-out scorer re-evaluates the trained model byte-level over a fixed prefix of the EXPOSED

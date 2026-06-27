@@ -106,6 +106,55 @@ def metadata_path_for_checkpoint(checkpoint_path: Path) -> Path:
     return Path(checkpoint_path).parent / CHECKPOINT_METADATA_FILENAME
 
 
+def persist_checkpoint(
+    workspace: CheckpointWorkspace,
+    *,
+    state_files: Mapping[str, bytes],
+    code_hash: str,
+    arch_hash: str,
+    recipe_fingerprint: str,
+    created_at: str,
+    hook_return: Mapping[str, Any] | None = None,
+    world_size: int = 1,
+) -> Path:
+    """Persist a crash-recovery checkpoint into the workspace ``current_dir`` with a v1 sidecar.
+
+    Writes each ``state_files`` entry (relative name -> bytes) under the per-submission/per-attempt
+    ``current_dir`` through the path-safe resolver (no traversal/symlink escape), bounds the total
+    logical size, and writes the schema-valid ``checkpoint_metadata.v1.json`` sidecar
+    (``rank_writer == 0``, ``world_size >= 1``, bounded ``bytes_total``). Returns ``current_dir``.
+    """
+    if not state_files:
+        raise CheckpointWorkspaceError("checkpoint must contain at least one state file")
+    if world_size < 1:
+        raise CheckpointWorkspaceError("checkpoint world_size must be >= 1")
+    current = workspace.current_dir
+    current.mkdir(parents=True, exist_ok=True)
+    for name, data in state_files.items():
+        target = resolve_checkpoint_artifact_path(current, name)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(bytes(data))
+    bytes_total = checkpoint_artifact_logical_size(current)
+    primary_name = next(iter(state_files))
+    metadata = {
+        "checkpoint_api_version": CHECKPOINT_METADATA_API_VERSION,
+        "submission_id": workspace.submission_id,
+        "attempt": workspace.attempt,
+        "code_hash": code_hash,
+        "arch_hash": arch_hash,
+        "recipe_fingerprint": recipe_fingerprint,
+        "created_at": created_at,
+        "checkpoint_path": primary_name,
+        "hook_return": dict(hook_return) if hook_return is not None else None,
+        "world_size": world_size,
+        "rank_writer": 0,
+        "checkpoint_dir": str(current),
+        "bytes_total": bytes_total,
+    }
+    write_checkpoint_metadata(metadata_path_for_checkpoint(current / primary_name), metadata)
+    return current
+
+
 def load_checkpoint_metadata(metadata_path: Path) -> dict[str, Any]:
     path = Path(metadata_path)
     try:
