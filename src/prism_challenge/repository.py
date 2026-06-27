@@ -479,7 +479,8 @@ class PrismRepository:
                 )
 
     async def quarantine_submission_for_llm_review(
-        self, *, submission_id: str, reason: str, payload: dict[str, Any]) -> None:
+        self, *, submission_id: str, reason: str, payload: dict[str, Any]
+    ) -> None:
         now = now_iso()
         async with self.database.connect() as conn:
             await conn.execute(
@@ -741,6 +742,57 @@ class PrismRepository:
         data["metadata"] = metadata if isinstance(metadata, dict) else {}
         return data
 
+    async def claim_submission(self, submission_id: str) -> dict[str, object] | None:
+        """Claim a SPECIFIC pending submission for the validator that was assigned it.
+
+        Mirrors :meth:`claim_next` but targets one submission so a coordination-plane pull
+        processes exactly its assigned work unit. The ``AND status='pending'`` guard + ``RETURNING``
+        make the claim atomic, so two validators can never double-claim the same submission and
+        re-processing an already-terminal (or in-flight) unit returns ``None`` (a safe no-op).
+        """
+        claimed_at = now_iso()
+        async with self.database.connect() as conn:
+            rows = await conn.execute_fetchall(
+                "UPDATE submissions SET status=?, updated_at=?, claimed_at=? "
+                "WHERE id=? AND status=? RETURNING *",
+                (
+                    SubmissionStatus.RUNNING.value,
+                    claimed_at,
+                    claimed_at,
+                    submission_id,
+                    SubmissionStatus.PENDING.value,
+                ),
+            )
+        row_list = list(rows)
+        if not row_list:
+            return None
+        data = dict(cast(Any, row_list[0]))
+        metadata = loads(str(data.get("metadata", "{}")))
+        data["metadata"] = metadata if isinstance(metadata, dict) else {}
+        return data
+
+    async def list_pending_submissions(self) -> list[dict[str, object]]:
+        """Return submissions awaiting re-execution (one prism work unit each), oldest first."""
+        async with self.database.connect() as conn:
+            rows = await conn.execute_fetchall(
+                "SELECT id, hotkey, code_hash, created_at FROM submissions "
+                "WHERE status=? ORDER BY created_at",
+                (SubmissionStatus.PENDING.value,),
+            )
+        return [dict(cast(Any, row)) for row in rows]
+
+    async def submission_status(self, submission_id: str) -> str | None:
+        """Return the current status of ``submission_id`` (``None`` when it does not exist)."""
+        async with self.database.connect() as conn:
+            rows = await conn.execute_fetchall(
+                "SELECT status FROM submissions WHERE id=?",
+                (submission_id,),
+            )
+        row_list = list(rows)
+        if not row_list:
+            return None
+        return str(row_list[0]["status"])
+
     async def container_job_attempt_count(self, submission_id: str, level: str) -> int:
         async with self.database.connect() as conn:
             rows = await conn.execute_fetchall(
@@ -798,7 +850,6 @@ class PrismRepository:
                 now_iso(),
             ),
         )
-
 
 
 def _validate_evidence(items: Any) -> list[dict[str, Any]]:

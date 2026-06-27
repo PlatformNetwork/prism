@@ -131,6 +131,23 @@ class PrismWorker:
         submission = await self.repository.claim_next()
         if submission is None:
             return None
+        return await self._process_claimed(submission)
+
+    async def process_submission(self, submission_id: str) -> str | None:
+        """Process exactly the submission assigned by the coordination plane.
+
+        Claims the SPECIFIC pending submission (CAS on status) and runs the same re-execution path
+        as :meth:`process_next`. A submission that is not pending (already terminal, or in-flight on
+        another validator) is a no-op returning ``None``, so a busy validator never starts a second
+        run and re-posting a completed assignment never re-dispatches the broker or mutates the
+        recorded result.
+        """
+        submission = await self.repository.claim_submission(submission_id)
+        if submission is None:
+            return None
+        return await self._process_claimed(submission)
+
+    async def _process_claimed(self, submission: dict[str, Any]) -> str:
         submission_id = str(submission["id"])
         code = str(submission["code"])
         filename = str(submission.get("filename") or "model.py")
@@ -159,13 +176,9 @@ class PrismWorker:
         try:
             snapshot = self._snapshot_from_submission(code, filename, metadata)
             component_review = self._component_review(snapshot)
-            code_for_eval = self._entrypoint_code(
-                snapshot, component_review.components.entrypoint
-            )
+            code_for_eval = self._entrypoint_code(snapshot, component_review.components.entrypoint)
             if not code_for_eval.strip():
-                await self._reject_submission(
-                    submission_id, "submission contains no Python source"
-                )
+                await self._reject_submission(submission_id, "submission contains no Python source")
                 return submission_id
             report = self._inspect_project_snapshot(snapshot, code_for_eval)
             await self._static_model_instantiation_check(snapshot, component_review)
@@ -243,9 +256,10 @@ class PrismWorker:
             }
         )
         evaluator = self._evaluator_factory(effective_settings, self.ctx)
-        attempt = await self.repository.container_job_attempt_count(
-            submission_id, self.execution_backend
-        ) + 1
+        attempt = (
+            await self.repository.container_job_attempt_count(submission_id, self.execution_backend)
+            + 1
+        )
         components = component_review.components
         try:
             result = await self._evaluate_within_wall_time(
@@ -776,5 +790,3 @@ class PrismWorker:
                 "UPDATE submissions SET status=?, arch_hash=?, updated_at=? WHERE id=?",
                 (SubmissionStatus.COMPLETED.value, arch_hash, now_iso(), submission_id),
             )
-
-

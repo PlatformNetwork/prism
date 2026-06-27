@@ -8,6 +8,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 
 from .auth import authenticate_internal
 from .config import PrismSettings, settings
+from .coordination import list_pending_prism_work_units, work_unit_to_payload
 from .db import Database
 from .evaluator.interface import PrismContext
 from .models import (
@@ -64,6 +65,20 @@ def create_app(app_settings: PrismSettings = settings) -> FastAPI:
     @app.post("/internal/v1/worker/process-next", dependencies=[Depends(authenticate_internal)])
     async def process_next() -> dict[str, str | None]:
         return {"submission_id": await worker.process_next()}
+
+    @app.get("/internal/v1/work_units", dependencies=[Depends(authenticate_internal)])
+    async def work_units() -> dict[str, object]:
+        """Expose pending prism work units (one gpu unit per submission) to the master plane.
+
+        The master coordination plane reads this to create exactly one assignable work unit per
+        submission and assign it - with concurrency 1 - to a single online gpu validator. This
+        endpoint is execution-free: enumerating work units never invokes the broker/executor.
+        """
+        units = await list_pending_prism_work_units(repository)
+        return {
+            "challenge_slug": app_settings.slug,
+            "work_units": [work_unit_to_payload(unit) for unit in units],
+        }
 
     @app.post(
         "/internal/v1/bridge/submissions",
