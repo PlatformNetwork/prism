@@ -372,9 +372,10 @@ def review_plagiarism(
             ),
         )
     except Exception as exc:
-        return PlagiarismReview(
-            True, f"LLM plagiarism review failed closed: {exc}", ["llm_review_failed"]
+        reason = _redact_secrets(
+            f"LLM plagiarism review failed closed: {exc}", _collect_secrets(config)
         )
+        return PlagiarismReview(True, reason, ["llm_review_failed"])
     verdict = review["verdict"]
     copied = bool(verdict["verdict"])
     evidence = _as_evidence_payload(verdict.get("evidence"))

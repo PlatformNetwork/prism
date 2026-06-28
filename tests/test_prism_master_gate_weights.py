@@ -37,7 +37,7 @@ from prism_challenge.evaluator.container import (
     _resolve_recorded_trained_state,
 )
 from prism_challenge.evaluator.interface import PrismContext
-from prism_challenge.evaluator.llm_review import LlmReviewConfig, review_code
+from prism_challenge.evaluator.llm_review import LlmReviewConfig, review_code, review_plagiarism
 from prism_challenge.repository import PrismRepository, epoch_id_for
 from prism_challenge.weights import _normalize, get_weights
 
@@ -328,6 +328,25 @@ def test_failed_closed_reason_redacts_secrets(monkeypatch) -> None:
     )
     assert review.held is True
     assert GATEWAY_TOKEN not in review.reason
+    assert "[REDACTED]" in review.reason
+
+
+def test_plagiarism_failed_closed_reason_redacts_secrets(monkeypatch) -> None:
+    def leak(config, *, system, prompt):  # noqa: ANN001
+        raise RuntimeError(f"upstream rejected Authorization: Bearer {GATEWAY_TOKEN}")
+
+    monkeypatch.setattr(llm, "_invoke_review_flow", leak)
+
+    review = review_plagiarism(
+        current_code="def f():\n    return 1\n",
+        candidate_code="def g():\n    return 2\n",
+        comparison_report={"overlap": 0.0},
+        config=LlmReviewConfig(gateway_token=GATEWAY_TOKEN, api_key=PROVIDER_KEY),
+    )
+    assert review.copied is True
+    assert "llm_review_failed" in review.violations
+    assert GATEWAY_TOKEN not in review.reason
+    assert PROVIDER_KEY not in review.reason
     assert "[REDACTED]" in review.reason
 
 
