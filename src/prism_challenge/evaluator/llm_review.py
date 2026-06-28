@@ -165,7 +165,7 @@ class LlmReviewConfig:
     enabled: bool = True
     required: bool = False
     base_url: str = "https://openrouter.ai/api/v1"
-    model: str | None = "openai/gpt-4o"
+    model: str | None = "anthropic/claude-opus-4.8"
     api_key: str | None = None
     api_key_file: str | Path | None = "/run/secrets/openrouter_api_key"
     # Master OpenRouter gateway routing. When ``gateway_url`` + a resolvable ``gateway_token`` are

@@ -123,7 +123,7 @@ def test_llm_hard_gate_is_documented() -> None:
     combined = f"{security}\n{operators}"
 
     assert "OpenRouter" in combined
-    assert "openai/gpt-4o" in combined
+    assert "anthropic/claude-opus-4.8" in combined
     assert "hard gate" in combined.lower()
     # A reject is terminal and stops the pipeline before any GPU work.
     assert "reject" in combined.lower()

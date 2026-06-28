@@ -20,8 +20,9 @@ from prism_challenge.evaluator.llm_review import (
 )
 from prism_challenge.sdk.executors.docker import DockerRunResult
 
-# Reason strings mirror what the live gpt-4o gate now returns for the three known obfuscation
-# vectors (runtime-decoded hex blob, dynamic setattr rebind, requires_grad anti-anti-cheat toggle).
+# Reason strings mirror what the live claude-opus-4.8 gate now returns for the three known
+# obfuscation vectors (runtime-decoded hex blob, dynamic setattr rebind, requires_grad
+# anti-anti-cheat toggle).
 OBFUSCATION_REJECT_REASON = (
     "The training script decodes a runtime hex blob and toggles requires_grad to drive control "
     "flow, which is obfuscation/evasion of the static sandbox and anti-cheat checks."
@@ -141,8 +142,10 @@ def test_safety_prompt_enumerates_obfuscation_red_flags() -> None:
     # Runtime-decoded encoded blobs (the contract's primary obfuscation example).
     assert "fromhex" in text
     assert "base64" in text
-    assert "decoded at runtime" in text or "decoded during execution" in text or (
-        "decode" in text and "runtime" in text
+    assert (
+        "decoded at runtime" in text
+        or "decoded during execution" in text
+        or ("decode" in text and "runtime" in text)
     )
     # Single-letter / variable-driven indirection.
     assert "single-letter" in text
@@ -165,9 +168,7 @@ def test_obfuscation_verdict_is_terminal_reject_not_held() -> None:
     import prism_challenge.evaluator.llm_review as module
 
     original = module._load_chat_openai
-    module._load_chat_openai = lambda: _fake_chat_class(
-        _verdict(False, OBFUSCATION_REJECT_REASON)
-    )
+    module._load_chat_openai = lambda: _fake_chat_class(_verdict(False, OBFUSCATION_REJECT_REASON))
     try:
         review = review_code(
             "# file: architecture.py\n# file: training.py\n",
@@ -228,9 +229,10 @@ def test_obfuscation_verdict_rejects_terminally_pre_gpu(tmp_path, monkeypatch) -
             )
         assert int(review["approved"]) == 0
         assert review["final_state"] == "rejected"
-        assert "obfuscation" in str(review["reason"]).lower() or "evasion" in str(
-            review["reason"]
-        ).lower()
+        assert (
+            "obfuscation" in str(review["reason"]).lower()
+            or "evasion" in str(review["reason"]).lower()
+        )
         assert list(scores) == []
         assert list(gpu_leases) == []
         assert list(gpu_jobs) == []

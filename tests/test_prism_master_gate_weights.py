@@ -1,9 +1,9 @@
-"""Prism master-side held-out RCE-safe load, gpt-4o gate via the master gateway, and weights.
+"""Prism master-side held-out RCE-safe load, claude-opus gate via the master gateway, and weights.
 
 Covers VAL-PRISM-030..036 (architecture.md sections 5, 6, 7, 11):
   030 - trained_state loaded ONLY when the challenge manifest recorded that exact artifact as a
         regular file under the run dir (no traversal/symlink), with weights_only=True.
-  031 - the llm_review gate targets openai/gpt-4o via the master OpenRouter gateway at temp 0.
+  031 - the llm_review gate targets anthropic/claude-opus-4.8 via the master gateway at temp 0.
   032 - an LLM reject is TERMINAL and pre-eval (no container eval / GPU lease / checkpoint publish).
   033 - a gateway failure / unparseable verdict fails CLOSED (hold); oversized source rejected.
   034 - the validator/eval runtime holds NO provider key (gateway token only); secrets redacted.
@@ -44,7 +44,7 @@ from prism_challenge.weights import _normalize, get_weights
 GATEWAY_OPENROUTER_URL = "http://base-master:18080/llm/openrouter"
 GATEWAY_TOKEN = "gw-scoped-token-abc123"
 PROVIDER_KEY = "sk-or-raw-provider-key-must-not-leak"
-GPT4O = "openai/gpt-4o"
+CLAUDE_OPUS = "anthropic/claude-opus-4.8"
 EPOCH_SECONDS = 60
 
 _ALLOW_ARGS: dict[str, dict[str, Any]] = {
@@ -137,7 +137,7 @@ def test_recorded_trained_state_returns_none_for_missing_file(tmp_path: Path) ->
     assert _resolve_recorded_trained_state(artifacts, TRAINED_STATE_ARTIFACT) is None
 
 
-# --- VAL-PRISM-031: gpt-4o via the master OpenRouter gateway at temperature 0 ---------------------
+# --- VAL-PRISM-031: claude-opus-4.8 via the master OpenRouter gateway at temperature 0 -----------
 
 
 def test_llm_gate_routes_through_master_gateway_with_token(monkeypatch) -> None:
@@ -153,7 +153,7 @@ def test_llm_gate_routes_through_master_gateway_with_token(monkeypatch) -> None:
     review = review_code("def build_model(ctx):\n    return None\n", config=config)
 
     assert review.approved is True
-    assert captured["model"] == GPT4O
+    assert captured["model"] == CLAUDE_OPUS
     assert captured["base_url"] == GATEWAY_OPENROUTER_URL
     assert captured["temperature"] == 0.0
     # The scoped gateway token authenticates the call, NOT the raw provider key.
@@ -172,7 +172,7 @@ def test_llm_gate_falls_back_to_direct_openrouter_without_gateway(monkeypatch) -
 
     assert review.approved is True
     assert captured["base_url"] == "https://openrouter.ai/api/v1"
-    assert captured["model"] == GPT4O
+    assert captured["model"] == CLAUDE_OPUS
     assert captured["api_key"] == PROVIDER_KEY
 
 

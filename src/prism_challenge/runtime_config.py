@@ -110,7 +110,7 @@ class LlmReviewPolicy(BaseModel):
     enabled: bool = False
     required: bool = False
     base_url: str = "https://openrouter.ai/api/v1"
-    model: str | None = "openai/gpt-4o"
+    model: str | None = "anthropic/claude-opus-4.8"
     min_confidence: float = Field(default=0.72, ge=0, le=1)
     timeout_seconds: int = Field(default=60, ge=1)
     evidence_required_for_rejection: bool = True
@@ -284,12 +284,8 @@ def runtime_policy_defaults(settings: PrismSettings) -> dict[str, Any]:
                 "gpu_count": 1,
                 "phase_1_dataset_subset": "sample-10BT",
                 "phase_2_dataset_subset": "sample-100BT",
-                "phase_1_dataset_tokens": int(
-                    FINEWEB_EDU_SUBSETS["sample-10BT"]["token_count"]
-                ),
-                "phase_2_dataset_tokens": int(
-                    FINEWEB_EDU_SUBSETS["sample-100BT"]["token_count"]
-                ),
+                "phase_1_dataset_tokens": int(FINEWEB_EDU_SUBSETS["sample-10BT"]["token_count"]),
+                "phase_2_dataset_tokens": int(FINEWEB_EDU_SUBSETS["sample-100BT"]["token_count"]),
             },
         },
         "artifact_limits": {

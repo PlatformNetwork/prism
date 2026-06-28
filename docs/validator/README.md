@@ -90,7 +90,7 @@ winning.
 | `PRISM_BASE_EVAL_GPU_COUNT` | Scored GPU count (default 1; the `nproc=1` path). |
 | `PRISM_DISTRIBUTED_CONTRACT_POLICY` | `reject` / `flag` / `off` for the multi-GPU static contract. |
 | `PRISM_LLM_REVIEW_ENABLED` | Enables the OpenRouter LLM hard gate (default on). |
-| `PRISM_OPENROUTER_MODEL` | LLM model (default `openai/gpt-4o`). |
+| `PRISM_OPENROUTER_MODEL` | LLM model (default `anthropic/claude-opus-4.8`). |
 
 Use secret files for the shared token, broker token, and OpenRouter key. Do not store real secrets in
 YAML examples or docs.

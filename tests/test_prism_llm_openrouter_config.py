@@ -13,7 +13,7 @@ from prism_challenge.queue import PrismWorker
 from prism_challenge.runtime_config import resolve_runtime_policy, runtime_policy_defaults
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-STRONG_MODEL = "openai/gpt-4o"
+STRONG_MODEL = "anthropic/claude-opus-4.8"
 DEAD_MODEL = "anthropic/claude-3.5-sonnet"
 SECRET_PATH = Path("/run/secrets/openrouter_api_key")
 

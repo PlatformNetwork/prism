@@ -52,7 +52,7 @@ component_eval_repeat_count: 1
 llm_review_enabled: true
 llm_review_required: false
 openrouter_base_url: https://openrouter.ai/api/v1
-openrouter_model: openai/gpt-4o
+openrouter_model: anthropic/claude-opus-4.8
 openrouter_api_key_file: /run/secrets/openrouter_api_key
 llm_review_timeout_seconds: 60
 llm_review_temperature: 0.0

@@ -62,7 +62,7 @@ records the online loss itself. This neutralizes the three cheat classes:
 ## OpenRouter LLM Hard Gate
 
 After the static gates pass, a strong LLM reviews both scripts as a **hard gate**. The reviewer runs
-on OpenRouter with `openai/gpt-4o` by default, using the key from the Docker secret mounted at
+on OpenRouter with `anthropic/claude-opus-4.8` by default, using the key from the Docker secret mounted at
 `/run/secrets/openrouter_api_key`. It checks architecture-to-training coherence, cheating and
 obfuscation (smuggled weights, hidden network, dead/no-op loops, metric gaming), and dangerous
 operations the static sandbox might miss.

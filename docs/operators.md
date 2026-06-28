@@ -81,7 +81,7 @@ The OpenRouter LLM hard gate is enabled by default and reviews both scripts befo
 ```bash
 PRISM_LLM_REVIEW_ENABLED=true
 PRISM_OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-PRISM_OPENROUTER_MODEL=openai/gpt-4o
+PRISM_OPENROUTER_MODEL=anthropic/claude-opus-4.8
 PRISM_OPENROUTER_API_KEY_FILE=/run/secrets/openrouter_api_key
 ```
 

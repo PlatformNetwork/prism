@@ -38,7 +38,7 @@ the whole curve, single-checkpoint gaming fails.
 
 1. A miner submits a two-script bundle (`architecture.py` + `training.py`).
 2. PRISM validates the two-script contract and runs the static AST sandbox.
-3. A strong **OpenRouter** LLM (`openai/gpt-4o`) reviews both scripts as a hard gate and can reject
+3. A strong **OpenRouter** LLM (`anthropic/claude-opus-4.8`) reviews both scripts as a hard gate and can reject
    before any GPU work. The gate runs on the master through the OpenRouter gateway (temperature 0);
    validators hold no provider keys.
 4. The master coordination plane assigns the submission's single GPU work unit to one online
@@ -68,7 +68,7 @@ the whole curve, single-checkpoint gaming fails.
   `resume_checkpoint_ref`) rather than restarting.
 - **Prequential bits-per-byte scoring**: the primary, tokenizer-agnostic, compute-normalized metric,
   with a held-out delta-over-random-init tie-breaker and an anti-memorization gap penalty.
-- **OpenRouter LLM hard gate**: `openai/gpt-4o` reviews both scripts on the master through the
+- **OpenRouter LLM hard gate**: `anthropic/claude-opus-4.8` reviews both scripts on the master through the
   OpenRouter gateway (temperature 0); a `reject` is terminal. Validators hold no provider keys, and
   `llm_review` fails closed when a gateway URL is configured but its scoped token is unresolvable.
 - **Single-node multi-GPU contract**: the miner's loop scales across 1-8 GPUs; the scored run uses

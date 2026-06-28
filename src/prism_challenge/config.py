@@ -91,7 +91,7 @@ class PrismSettings(ChallengeSettings):
         validation_alias=AliasChoices("PRISM_OPENROUTER_BASE_URL", "PRISM_CHUTES_BASE_URL"),
     )
     openrouter_model: str = Field(
-        default="openai/gpt-4o",
+        default="anthropic/claude-opus-4.8",
         validation_alias=AliasChoices("PRISM_OPENROUTER_MODEL", "PRISM_CHUTES_MODEL"),
     )
     openrouter_api_key: str | None = Field(
@@ -103,7 +103,7 @@ class PrismSettings(ChallengeSettings):
         default=Path("/run/secrets/openrouter_api_key"),
         validation_alias=AliasChoices("PRISM_OPENROUTER_API_KEY_FILE", "PRISM_CHUTES_API_KEY_FILE"),
     )
-    # The prism llm_review gpt-4o gate routes through the MASTER OpenRouter gateway: the gateway
+    # The prism llm_review gate routes through the MASTER OpenRouter gateway: the gateway
     # injects the provider key server-side, so the challenge/validator holds NO provider key -- only
     # a scoped gateway token (architecture.md sections 5, 7; VAL-PRISM-031/034). When a gateway URL
     # + token are configured they take precedence over a direct OpenRouter call.
