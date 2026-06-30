@@ -67,12 +67,54 @@ entry per hotkey).
 
 ### `GET /v1/architectures`
 
-Legacy family-listing endpoint retained for API compatibility.
+Architecture-lab leaderboard grouped by architecture family, ranked by `best_final_score`
+descending. Optional query parameter `epoch_id` scopes to architectures with a completed submission
+in that epoch; omitting it resolves to the most-recent non-empty epoch.
 
-### `GET /v1/training-variants`
+```json
+{
+  "epoch_id": 42,
+  "architectures": [
+    {
+      "rank": 1,
+      "architecture_id": "...",
+      "arch_hash": "...",
+      "name": "Rotary MoE v3",
+      "owner_hotkey": "...",
+      "best_final_score": 1.2345,
+      "best_submission_id": "...",
+      "variant_count": 3,
+      "submission_count": 7,
+      "updated_at": "..."
+    }
+  ]
+}
+```
 
-Legacy variant-listing endpoint retained for API compatibility. Optional query parameters:
-`architecture_id`, `limit`.
+`name` is the miner-declared, deterministically moderated architecture name (may be `null`).
+
+### `GET /v1/architectures/{architecture_id}`
+
+Returns one architecture's lab detail (name, owner, best score/submission, variant and submission
+counts, `first_seen_at`, `updated_at`). `404` if the architecture does not exist.
+
+### `GET /v1/architectures/{architecture_id}/variants`
+
+Returns the architecture's training-script variants (best first). `404` if the architecture does
+not exist; an empty `variants` array is valid.
+
+### `GET /v1/architectures/{architecture_id}/report`
+
+Returns the cached LLM auto-report, generated lazily and non-blockingly through the OpenRouter
+gateway and grounded only in measured facts. `report.status` is `ready`, `pending`, or
+`unavailable`; `content` may be `null` when not `ready`. `404` if the architecture does not exist.
+
+### `GET /v1/submissions/{submission_id}/curve`
+
+Returns the persisted loss curve (`online_loss` + `covered_bytes_cumulative`, downsampled to at most
+500 points with the first and last samples preserved), the prequential bits-per-byte scalars, and
+the reconciled compute profile (`estimated_flops`, `gpu_hours`, peak VRAM/RSS, wall-clock). `404` if
+the submission has no persisted curve.
 
 ### `GET /v1/epochs/current`
 

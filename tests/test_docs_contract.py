@@ -231,15 +231,28 @@ def test_api_doc_only_lists_live_internal_routes() -> None:
         assert removed_route not in api
 
 
-def test_dead_nas_component_routes_are_removed(client: TestClient) -> None:
-    """The v1-NAS ``/v1/architectures`` and ``/v1/training-variants`` endpoints were dead.
+def test_architecture_lab_routes_replace_dead_nas_routes(client: TestClient) -> None:
+    """The architecture-lab serving layer revives ``/v1/architectures`` and re-homes variants.
 
-    Their writers were removed in the NAS decommission (commit ``12376e6``); the
-    ``architecture_families`` / ``training_variants`` tables are never populated, so both
-    routes returned ``[]`` forever and misled consumers. This contract pins their removal:
-    requesting either path now yields ``404 Not Found`` (no route registered).
+    The original v1-NAS standalone ``/v1/training-variants`` listing stayed dead (its writers were
+    removed in the NAS decommission, commit ``12376e6``); training variants are now nested under
+    ``/v1/architectures/{id}/variants``. ``/v1/architectures`` is a LIVE grouped leaderboard again
+    (the lab producer repopulates ``architecture_families`` / ``training_variants``), so this
+    contract pins the new reality: the grouped listing is served (200 with the documented shape),
+    while the retired flat ``/v1/training-variants`` path remains absent (404, no route registered).
     """
 
-    for removed_route in ("/v1/architectures", "/v1/training-variants"):
-        response = client.get(removed_route)
-        assert response.status_code == 404, (removed_route, response.text)
+    architectures = client.get("/v1/architectures")
+    assert architectures.status_code == 200, architectures.text
+    body = architectures.json()
+    assert set(body.keys()) == {"epoch_id", "architectures"}
+    assert isinstance(body["architectures"], list)
+
+    # The old flat variant listing is gone; variants now hang off an architecture.
+    assert client.get("/v1/training-variants").status_code == 404
+
+    # The nested variant route is registered (an unknown architecture is a 404 *from the handler*,
+    # never a 405/route-missing): a missing architecture yields the handler's not-found detail.
+    nested = client.get("/v1/architectures/does-not-exist/variants")
+    assert nested.status_code == 404, nested.text
+    assert nested.json()["detail"] == "architecture not found"

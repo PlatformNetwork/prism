@@ -21,6 +21,7 @@ from .evaluator.component_signatures import (
 from .evaluator.components import (
     PrismComponentFingerprints,
     PrismProjectComponents,
+    architecture_name,
     component_fingerprints,
     project_components,
 )
@@ -91,6 +92,13 @@ def _metadata_value(metadata: dict[str, Any], *keys: str) -> Any:
         value = metadata.get(key)
         if value is not None:
             return value
+    return None
+
+
+def _optional_real(value: Any) -> float | None:
+    """Coerce a manifest scalar to ``float`` for a nullable REAL column, else ``None``."""
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return float(value)
     return None
 
 
@@ -231,6 +239,8 @@ class PrismWorker:
         arch_hash = component_review.fingerprints.family_hash
         if not arch_hash:
             arch_hash = sha256(":".join(sorted(report.ast_fingerprint)).encode()).hexdigest()
+        # Parsed + moderated miner-declared architecture name (deterministic; consensus-critical).
+        arch_name = architecture_name(component_review.components)
         previous = await self.repository.previous_codes(submission_id)
         anti = evaluate_anti_cheat(
             code,
@@ -304,6 +314,8 @@ class PrismWorker:
                 artifact_output_path=result.artifact_output_path,
                 run_manifest_path=result.run_manifest_path,
                 attempt=attempt,
+                started_at=result.started_at,
+                ended_at=result.ended_at,
             )
             if not _is_v2_run_manifest(result.run_manifest):
                 await self._fail_submission(
@@ -316,6 +328,9 @@ class PrismWorker:
                 arch_hash=arch_hash,
                 anti=anti,
                 manifest=cast(dict[str, Any], result.run_manifest),
+                hotkey=hotkey,
+                fingerprints=component_review.fingerprints,
+                name=arch_name,
             )
             return submission_id
         except InfrastructureEvaluationError as exc:
@@ -735,6 +750,8 @@ class PrismWorker:
         run_manifest_path: str | None = None,
         infra_retryable: bool = False,
         attempt: int = 0,
+        started_at: str | None = None,
+        ended_at: str | None = None,
     ) -> None:
         async with self.repository.database.connect() as conn:
             await conn.execute(
@@ -743,8 +760,8 @@ class PrismWorker:
                 "created_at, "
                 "updated_at, gpu_lease_id, target_id, target_server, gpu_device_ids, "
                 "requested_gpu_count, actual_gpu_count, gpu_mode, gpu_tier, "
-                "artifact_output_path, run_manifest_path, infra_retryable) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "artifact_output_path, run_manifest_path, started_at, ended_at, infra_retryable) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     str(uuid4()),
                     submission_id,
@@ -766,6 +783,8 @@ class PrismWorker:
                     lease.tier if lease else "",
                     artifact_output_path,
                     run_manifest_path,
+                    started_at,
+                    ended_at,
                     int(infra_retryable),
                 ),
             )
@@ -777,6 +796,9 @@ class PrismWorker:
         arch_hash: str,
         anti: Any,
         manifest: dict[str, Any],
+        hotkey: str = "",
+        fingerprints: PrismComponentFingerprints | None = None,
+        name: str | None = None,
     ) -> None:
         """Finalize a container run using the CHALLENGE-OWNED prequential bits-per-byte score.
 
@@ -784,6 +806,12 @@ class PrismWorker:
         challenge-authored ``prism_run_manifest.v2`` (the legacy NAS q_arch/q_recipe derivation and
         the component-reward branching are NOT on this path, so they no longer affect the score).
         A degenerate run that cannot yield a finite/positive bpb is failed rather than scored.
+
+        Alongside the ``scores`` / ``submissions`` rows this also populates the architecture-lab
+        tables: it upserts the ``architecture_families`` row (keyed by ``family_hash`` == arch_hash)
+        and the ``training_variants`` row (keyed by ``(architecture_id, training_hash)``), and
+        persists the loss curve + reconciled compute block into ``submission_curves`` so the data is
+        centrally queryable (none of these are inputs to the score).
         """
         try:
             score = score_prequential_bpb(manifest)
@@ -794,6 +822,12 @@ class PrismWorker:
         final_score_value = max(0.0, score.final_score * anti_multiplier)
         metrics_payload = score.metrics_payload()
         metrics_payload["arch_hash"] = arch_hash
+        training_hash = fingerprints.training_hash if fingerprints else ""
+        arch_fingerprint = (fingerprints.arch_fingerprint if fingerprints else "") or arch_hash
+        behavior_fingerprint = (
+            fingerprints.behavior_fingerprint if fingerprints else ""
+        ) or arch_hash
+        now = now_iso()
         async with self.repository.database.connect() as conn:
             await conn.execute(
                 "INSERT OR REPLACE INTO scores("
@@ -808,10 +842,192 @@ class PrismWorker:
                     0.0,
                     final_score_value,
                     dumps(metrics_payload),
-                    now_iso(),
+                    now,
                 ),
             )
             await conn.execute(
-                "UPDATE submissions SET status=?, arch_hash=?, updated_at=? WHERE id=?",
-                (SubmissionStatus.COMPLETED.value, arch_hash, now_iso(), submission_id),
+                "UPDATE submissions SET status=?, arch_hash=?, name=?, updated_at=? WHERE id=?",
+                (SubmissionStatus.COMPLETED.value, arch_hash, name, now, submission_id),
             )
+            architecture_id = await self._upsert_architecture_family(
+                conn,
+                family_hash=arch_hash,
+                arch_fingerprint=arch_fingerprint,
+                behavior_fingerprint=behavior_fingerprint,
+                owner_hotkey=hotkey,
+                submission_id=submission_id,
+                final_score=final_score_value,
+                display_name=name,
+                now=now,
+            )
+            await self._upsert_training_variant(
+                conn,
+                architecture_id=architecture_id,
+                training_hash=training_hash or arch_hash,
+                owner_hotkey=hotkey,
+                submission_id=submission_id,
+                final_score=final_score_value,
+                now=now,
+            )
+            await self._persist_submission_curve(
+                conn, submission_id=submission_id, manifest=manifest, now=now
+            )
+
+    async def _upsert_architecture_family(
+        self,
+        conn: Any,
+        *,
+        family_hash: str,
+        arch_fingerprint: str,
+        behavior_fingerprint: str,
+        owner_hotkey: str,
+        submission_id: str,
+        final_score: float,
+        display_name: str | None,
+        now: str,
+    ) -> str:
+        """Upsert the family keyed by ``family_hash``; returns the stable ``architecture_id``.
+
+        Owner / owner_submission_id / display_name stay stable to the family-creating submission;
+        the canonical (best) submission + ``q_arch_best`` advance only when a higher final_score
+        arrives.
+        """
+        rows = await conn.execute_fetchall(
+            "SELECT id, q_arch_best FROM architecture_families WHERE family_hash=?",
+            (family_hash,),
+        )
+        if rows:
+            row = list(rows)[0]
+            architecture_id = str(row[0])
+            if final_score > float(row[1]):
+                await conn.execute(
+                    "UPDATE architecture_families SET canonical_submission_id=?, q_arch_best=?, "
+                    "updated_at=? WHERE id=?",
+                    (submission_id, final_score, now, architecture_id),
+                )
+            else:
+                await conn.execute(
+                    "UPDATE architecture_families SET updated_at=? WHERE id=?",
+                    (now, architecture_id),
+                )
+            return architecture_id
+        architecture_id = str(uuid4())
+        await conn.execute(
+            "INSERT INTO architecture_families("
+            "id, family_hash, arch_fingerprint, behavior_fingerprint, owner_hotkey,"
+            "owner_submission_id, canonical_submission_id, q_arch_best, display_name,"
+            "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                architecture_id,
+                family_hash,
+                arch_fingerprint,
+                behavior_fingerprint,
+                owner_hotkey,
+                submission_id,
+                submission_id,
+                final_score,
+                display_name,
+                now,
+                now,
+            ),
+        )
+        return architecture_id
+
+    async def _upsert_training_variant(
+        self,
+        conn: Any,
+        *,
+        architecture_id: str,
+        training_hash: str,
+        owner_hotkey: str,
+        submission_id: str,
+        final_score: float,
+        now: str,
+    ) -> None:
+        """Upsert the variant keyed by ``(architecture_id, training_hash)``.
+
+        The representative submission / owner / score advance only when a better final_score
+        arrives, then ``is_current_best`` is recomputed across the architecture's variants
+        (highest score wins, ties broken by earliest creation then id) so exactly one is flagged.
+        """
+        rows = await conn.execute_fetchall(
+            "SELECT id, q_recipe FROM training_variants "
+            "WHERE architecture_id=? AND training_hash=?",
+            (architecture_id, training_hash),
+        )
+        if rows:
+            row = list(rows)[0]
+            variant_id = str(row[0])
+            if final_score > float(row[1]):
+                await conn.execute(
+                    "UPDATE training_variants SET owner_hotkey=?, submission_id=?, q_recipe=?, "
+                    "metric_mean=?, metric_std=?, updated_at=? WHERE id=?",
+                    (owner_hotkey, submission_id, final_score, final_score, 0.0, now, variant_id),
+                )
+            else:
+                await conn.execute(
+                    "UPDATE training_variants SET updated_at=? WHERE id=?",
+                    (now, variant_id),
+                )
+        else:
+            await conn.execute(
+                "INSERT INTO training_variants("
+                "id, architecture_id, training_hash, owner_hotkey, submission_id, q_recipe,"
+                "metric_mean, metric_std, is_current_best, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    str(uuid4()),
+                    architecture_id,
+                    training_hash,
+                    owner_hotkey,
+                    submission_id,
+                    final_score,
+                    final_score,
+                    0.0,
+                    0,
+                    now,
+                    now,
+                ),
+            )
+        await conn.execute(
+            "UPDATE training_variants SET is_current_best=0 WHERE architecture_id=?",
+            (architecture_id,),
+        )
+        await conn.execute(
+            "UPDATE training_variants SET is_current_best=1 WHERE id=("
+            "SELECT id FROM training_variants WHERE architecture_id=? "
+            "ORDER BY q_recipe DESC, created_at ASC, id ASC LIMIT 1)",
+            (architecture_id,),
+        )
+
+    async def _persist_submission_curve(
+        self,
+        conn: Any,
+        *,
+        submission_id: str,
+        manifest: dict[str, Any],
+        now: str,
+    ) -> None:
+        """Persist the loss curve + reconciled compute block centrally (downsampled when served)."""
+        metrics_block = manifest.get("metrics")
+        metrics = metrics_block if isinstance(metrics_block, dict) else {}
+        data_block = manifest.get("data")
+        data = data_block if isinstance(data_block, dict) else {}
+        compute_block = manifest.get("compute")
+        compute = compute_block if isinstance(compute_block, dict) else {}
+        online_loss = metrics.get("online_loss") or []
+        covered_bytes_cumulative = data.get("covered_bytes_cumulative") or []
+        await conn.execute(
+            "INSERT OR REPLACE INTO submission_curves("
+            "submission_id, online_loss, covered_bytes_cumulative, step0_loss, baseline_nats,"
+            "compute, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                submission_id,
+                dumps(online_loss),
+                dumps(covered_bytes_cumulative),
+                _optional_real(metrics.get("step0_loss")),
+                _optional_real(metrics.get("random_init_baseline_nats")),
+                dumps(compute),
+                now,
+            ),
+        )

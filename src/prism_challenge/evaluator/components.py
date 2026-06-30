@@ -21,6 +21,15 @@ MANIFEST_NAMES = {"prism.yaml", "prism.yml"}
 PROJECT_KINDS = {"full", "architecture_only", "training_for_arch"}
 DEFAULT_PROJECT_KIND = "full"
 
+# Miner-declared human-readable architecture name: a module-level ``ARCHITECTURE_NAME = "..."``
+# constant in the architecture entrypoint, parsed deterministically via AST (no code execution) and
+# moderated deterministically. The moderation MUST be byte-for-byte identical across validators for
+# consensus, so it is a pure function with no randomness and no LLM (architecture-lab API contract).
+ARCHITECTURE_NAME_CONSTANT = "ARCHITECTURE_NAME"
+ARCHITECTURE_NAME_MAX_LENGTH = 48
+# Allowed non-alphanumeric characters: spaces are handled separately by the whitespace collapse.
+_ARCHITECTURE_NAME_ALLOWED_SPECIAL = frozenset("-_.()[]/+&")
+
 
 @dataclass(frozen=True)
 class PrismProjectComponents:
@@ -168,6 +177,86 @@ def component_fingerprints(
         behavior_fingerprint=arch_fingerprint,
         training_hash=training_hash,
     )
+
+
+def architecture_name(components: PrismProjectComponents) -> str | None:
+    """Parse + moderate the miner-declared ``ARCHITECTURE_NAME`` for the architecture entrypoint.
+
+    Returns the deterministically moderated display name, or ``None`` when the constant is absent,
+    is not a plain string literal, or moderates away to empty.
+    """
+    entrypoint = components.architecture_entrypoint or components.entrypoint
+    content = next(
+        (file.content for file in components.architecture_files if file.path == entrypoint),
+        None,
+    )
+    if content is None and components.architecture_files:
+        content = components.architecture_files[0].content
+    if content is None:
+        return None
+    return moderate_architecture_name(parse_architecture_name(content))
+
+
+def parse_architecture_name(content: str) -> str | None:
+    """Extract the module-level ``ARCHITECTURE_NAME`` string literal via AST (no code execution).
+
+    Only a plain top-level string-literal assignment (``ARCHITECTURE_NAME = "..."`` or an annotated
+    ``ARCHITECTURE_NAME: str = "..."``) is honored; anything else (missing, non-string, computed
+    expression) yields ``None``.
+    """
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return None
+    for node in tree.body:
+        targets: list[ast.expr] = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        else:
+            continue
+        if not any(
+            isinstance(target, ast.Name) and target.id == ARCHITECTURE_NAME_CONSTANT
+            for target in targets
+        ):
+            continue
+        value = node.value
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            return value.value
+        return None
+    return None
+
+
+def moderate_architecture_name(raw: str | None) -> str | None:
+    """Deterministically moderate a raw architecture name (architecture-lab API contract).
+
+    Trims and collapses internal whitespace runs to single spaces, strips control / non-printable
+    characters, keeps only letters / digits / spaces / ``-_.()[]/+&`` (dropping any other
+    character), truncates to 48 characters, and returns ``None`` when the result is empty. Pure and
+    deterministic so it is identical across validators for consensus.
+    """
+    if not isinstance(raw, str):
+        return None
+    # Collapse all whitespace runs to single ASCII spaces (also converts tabs/newlines so word
+    # boundaries survive the printable + charset filters below) and trim.
+    collapsed = " ".join(raw.split())
+    # Strip control / non-printable characters (ASCII space is printable and preserved).
+    printable = "".join(ch for ch in collapsed if ch.isprintable())
+    # Keep only the allowed charset; dropping disallowed chars can leave whitespace runs, so the
+    # collapse is re-applied before enforcing the max length.
+    filtered = "".join(
+        ch
+        for ch in printable
+        if ch == " "
+        or ch in _ARCHITECTURE_NAME_ALLOWED_SPECIAL
+        or ("a" <= ch <= "z")
+        or ("A" <= ch <= "Z")
+        or ("0" <= ch <= "9")
+    )
+    normalized = " ".join(filtered.split())
+    truncated = normalized[:ARCHITECTURE_NAME_MAX_LENGTH].strip()
+    return truncated or None
 
 
 def _manifest_file(snapshot: SourceSnapshot) -> SourceFile | None:

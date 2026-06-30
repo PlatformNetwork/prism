@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -60,6 +61,11 @@ class ContainerEvaluationResult:
     run_manifest: dict[str, Any] | None = None
     artifact_output_path: str | None = None
     run_manifest_path: str | None = None
+    # Coarse host-side wall-clock window (ISO-8601) around the scored container run. The primary
+    # scientific wall-clock is the in-runner ``compute.wall_clock_seconds``; these are a host-side
+    # backstop recorded onto ``eval_jobs.started_at`` / ``eval_jobs.ended_at``.
+    started_at: str | None = None
+    ended_at: str | None = None
 
 
 class ContainerEvaluationError(RuntimeError):
@@ -175,6 +181,7 @@ class PrismContainerEvaluator:
                 target.write_text(file.content, encoding="utf-8")
             runner_path.write_text(_CONTAINER_EVAL_SCRIPT, encoding="utf-8")
             command = _runner_launch_command(gpu_allocation["actual_gpu_count"])
+            started_at = _now_iso()
             try:
                 result = self._executor().run(
                     DockerRunSpec(
@@ -204,6 +211,7 @@ class PrismContainerEvaluator:
                     ),
                     self.settings.base_eval_hard_timeout_seconds,
                 )
+                ended_at = _now_iso()
             except DockerExecutorError as exc:
                 raise InfrastructureEvaluationError(str(exc)) from exc
             except (KeyError, TypeError, ValueError) as exc:
@@ -256,6 +264,8 @@ class PrismContainerEvaluator:
                 run_manifest_path=(
                     str(artifact_output / RUN_MANIFEST_V2_FILENAME) if manifest else None
                 ),
+                started_at=started_at,
+                ended_at=ended_at,
             )
 
     def _fresh_artifact_output(self, submission_id: str, attempt: int) -> Path:
@@ -566,6 +576,10 @@ class PrismContainerEvaluator:
         }
 
 
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat()
+
+
 def _default_entrypoint(files: tuple[SourceFile, ...], role: str) -> str:
     target = f"{role}.py"
     match = next((file for file in files if file.path.endswith(target)), None)
@@ -636,6 +650,41 @@ def _manifest_model_params(manifest: dict[str, Any]) -> int | None:
     return None
 
 
+def _manifest_tokens_consumed(manifest: dict[str, Any]) -> int | None:
+    """Tokens the scored run consumed (for the 6ND FLOPs estimate), if recorded by the runner."""
+    score = manifest.get("score")
+    if isinstance(score, dict):
+        value = score.get("tokens_consumed")
+        if isinstance(value, int | float) and not isinstance(value, bool) and value >= 0:
+            return int(value)
+    metrics = manifest.get("metrics")
+    if isinstance(metrics, dict):
+        for key in ("predicted_tokens", "tokens_seen"):
+            value = metrics.get(key)
+            if isinstance(value, int | float) and not isinstance(value, bool) and value >= 0:
+                return int(value)
+    return None
+
+
+def _compute_block_value(manifest: dict[str, Any], key: str) -> Any:
+    block = manifest.get("compute")
+    return block.get(key) if isinstance(block, Mapping) else None
+
+
+def _coerce_opt_int(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    if isinstance(value, float) and not isinstance(value, bool) and value >= 0.0:
+        return int(value)
+    return None
+
+
+def _coerce_opt_float(value: Any) -> float | None:
+    if isinstance(value, int | float) and not isinstance(value, bool) and value >= 0:
+        return float(value)
+    return None
+
+
 def _manifest_train_bpb_basis(manifest: dict[str, Any]) -> str | None:
     """The tokenizer basis the prequential TRAIN bpb was measured on (``bytes`` / ``tokenizer``)."""
     for key in ("metrics", "score"):
@@ -687,13 +736,28 @@ def _ensure_compute_block(
     if device is None:
         device = "cuda" if gpu_count > 0 else "cpu"
     max_gpu_count = _coerce_int(gpu_allocation.get("max_gpu_count"), default=0, minimum=0) or None
+    # The runner authored peak VRAM / peak RSS / wall-clock into the provisional compute block; read
+    # them BEFORE re-authoring so they survive this reconciliation (otherwise the re-author drops
+    # them). The host derives the analytical 6ND FLOPs estimate (6 * params * tokens) here; ``None``
+    # when either input is missing. None of these are ever an input to ``final_score``.
+    model_params = _manifest_model_params(manifest)
+    tokens_consumed = _manifest_tokens_consumed(manifest)
+    estimated_flops = (
+        6.0 * float(model_params) * float(tokens_consumed)
+        if model_params is not None and tokens_consumed is not None
+        else None
+    )
     manifest["compute"] = build_compute_block(
         gpu_count=gpu_count,
         world_size=world_size,
         nproc_per_node=nproc_per_node,
         device=device,
         max_gpu_count=max_gpu_count,
-        model_params=_manifest_model_params(manifest),
+        model_params=model_params,
+        peak_vram_bytes=_coerce_opt_int(_compute_block_value(manifest, "peak_vram_bytes")),
+        peak_rss_bytes=_coerce_opt_int(_compute_block_value(manifest, "peak_rss_bytes")),
+        wall_clock_seconds=_coerce_opt_float(_compute_block_value(manifest, "wall_clock_seconds")),
+        estimated_flops=estimated_flops,
     )
     try:
         (artifact_output / RUN_MANIFEST_V2_FILENAME).write_text(
@@ -839,6 +903,7 @@ import json
 import math
 import os
 import random
+import resource
 import sys
 import threading
 import time
@@ -1450,11 +1515,13 @@ ctx = PrismContext(
 _WATCHDOG_STOP = threading.Event()
 
 
-def _compute_block():
+def _compute_block(peak_vram_bytes=None, peak_rss_bytes=None, wall_clock_seconds=None):
     # Author the provisional compute block through the typed ComputeBlock schema (via
     # scoring.build_compute_block) so it is schema-validated at authoring time too, consistent with
     # the host-reconciled block. The host overwrites gpu_count with the leased DB actual_gpu_count
-    # on the scored path; this is never an input to final_score.
+    # on the scored path; this is never an input to final_score. The observability-only peak
+    # VRAM / peak RSS / wall-clock telemetry (rank-0, exact for the scored nproc=1 path) is folded
+    # in here so the host reconciliation preserves it; the host derives the 6ND FLOPs estimate.
     from prism_challenge.evaluator.scoring import build_compute_block
 
     return build_compute_block(
@@ -1462,6 +1529,9 @@ def _compute_block():
         world_size=world_size,
         nproc_per_node=world_size,
         device=str(device),
+        peak_vram_bytes=peak_vram_bytes,
+        peak_rss_bytes=peak_rss_bytes,
+        wall_clock_seconds=wall_clock_seconds,
     )
 
 
@@ -1572,9 +1642,32 @@ print(
     + str(train_entry) + "); calling train(ctx)",
     flush=True,
 )
+_train_start_monotonic = time.monotonic()
 miner_train(ctx)
+_train_wall_clock_seconds = max(0.0, time.monotonic() - _train_start_monotonic)
 _WATCHDOG_STOP.set()
 print("PRISM_RUNNER: train(ctx) returned", flush=True)
+
+# Observability-only scientific compute telemetry, measured AFTER train(ctx) returns (rank-0; exact
+# for the scored nproc=1 path). These are recorded into the manifest compute block and NEVER feed
+# the score. Peak VRAM is the CUDA allocator high-water mark; peak host RSS is the stdlib rusage
+# maximum resident set (KiB on Linux -> bytes). Each is best-effort and stays None on failure.
+_peak_vram_bytes = None
+try:
+    if torch.cuda.is_available():
+        _peak_vram_bytes = int(
+            max(
+                int(torch.cuda.max_memory_allocated(device)),
+                int(torch.cuda.max_memory_reserved(device)),
+            )
+        )
+except Exception:
+    _peak_vram_bytes = None
+_peak_rss_bytes = None
+try:
+    _peak_rss_bytes = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * 1024
+except Exception:
+    _peak_rss_bytes = None
 
 # --- summarize the challenge-captured online-loss stream (NOT miner-reported numbers) ---
 capture = interface._ONLINE_CAPTURE
@@ -1661,8 +1754,12 @@ def _write_challenge_manifest():
         # Observability-only GPUs leased for this run (== world_size == nproc_per_node for the
         # single-node scored path; ==1 for the scored nproc=1 run). Authored via the typed
         # ComputeBlock schema; the host reconciles gpu_count to the DB actual_gpu_count. Never an
-        # input to final_score.
-        "compute": _compute_block(),
+        # input to final_score. The measured peak VRAM / RSS / wall-clock telemetry rides along.
+        "compute": _compute_block(
+            peak_vram_bytes=_peak_vram_bytes,
+            peak_rss_bytes=_peak_rss_bytes,
+            wall_clock_seconds=_train_wall_clock_seconds,
+        ),
         "data": {
             "data_dir": str(data_dir),
             "shard_count": len(train_shards),

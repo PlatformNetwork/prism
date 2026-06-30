@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
-from typing import Any, SupportsFloat, cast
+from typing import Any, SupportsFloat, SupportsInt, cast
 from uuid import uuid4
 
 import aiosqlite
@@ -592,6 +592,143 @@ class PrismRepository:
                 "SELECT tier, COUNT(*) AS lease_count FROM gpu_leases GROUP BY tier",
             )
         return [dict(row) for row in status_rows], [dict(row) for row in tier_rows]
+
+    async def list_architectures(
+        self, epoch_id: int | None = None
+    ) -> tuple[int, list[dict[str, object]]]:
+        """Return (resolved_epoch_id, families) ranked by best final score descending.
+
+        Mirrors the leaderboard's epoch fallback: an explicit ``epoch_id`` scopes to architectures
+        with a completed submission in that epoch; ``None`` resolves to the most-recent non-empty
+        epoch (the current epoch when nothing has scored yet). Each family carries its cross-epoch
+        aggregates (best score / canonical submission / variant + submission counts).
+        """
+        async with self.database.connect() as conn:
+            resolved_epoch = epoch_id
+            if resolved_epoch is None:
+                latest_rows = await conn.execute_fetchall(
+                    "SELECT MAX(epoch_id) AS latest FROM submissions "
+                    "WHERE status=? AND arch_hash IS NOT NULL",
+                    (SubmissionStatus.COMPLETED.value,),
+                )
+                latest = list(latest_rows)[0]["latest"] if latest_rows else None
+                resolved_epoch = (
+                    int(cast(SupportsInt, latest))
+                    if latest is not None
+                    else epoch_id_for(datetime.now(UTC), self.epoch_seconds)
+                )
+            rows = await conn.execute_fetchall(
+                "SELECT af.id AS architecture_id, af.family_hash AS arch_hash, "
+                "af.display_name AS name, af.owner_hotkey AS owner_hotkey, "
+                "af.q_arch_best AS best_final_score, "
+                "af.canonical_submission_id AS best_submission_id, af.updated_at AS updated_at, "
+                "(SELECT COUNT(*) FROM training_variants tv WHERE tv.architecture_id=af.id) "
+                "AS variant_count, "
+                "(SELECT COUNT(*) FROM submissions s WHERE s.arch_hash=af.family_hash) "
+                "AS submission_count "
+                "FROM architecture_families af "
+                "WHERE EXISTS (SELECT 1 FROM submissions s2 WHERE s2.arch_hash=af.family_hash "
+                "AND s2.epoch_id=? AND s2.status=?) "
+                "ORDER BY af.q_arch_best DESC, af.created_at ASC, af.id ASC",
+                (resolved_epoch, SubmissionStatus.COMPLETED.value),
+            )
+        return resolved_epoch, [dict(row) for row in rows]
+
+    async def get_architecture(self, architecture_id: str) -> dict[str, object] | None:
+        """Return one architecture family's detail fields, or ``None`` when it does not exist."""
+        async with self.database.connect() as conn:
+            rows = await conn.execute_fetchall(
+                "SELECT af.id AS architecture_id, af.family_hash AS arch_hash, "
+                "af.display_name AS name, af.owner_hotkey AS owner_hotkey, "
+                "af.q_arch_best AS best_final_score, "
+                "af.canonical_submission_id AS best_submission_id, "
+                "af.created_at AS first_seen_at, af.updated_at AS updated_at, "
+                "(SELECT COUNT(*) FROM training_variants tv WHERE tv.architecture_id=af.id) "
+                "AS variant_count, "
+                "(SELECT COUNT(*) FROM submissions s WHERE s.arch_hash=af.family_hash) "
+                "AS submission_count "
+                "FROM architecture_families af WHERE af.id=?",
+                (architecture_id,),
+            )
+        row_list = list(rows)
+        return dict(row_list[0]) if row_list else None
+
+    async def list_training_variants(self, architecture_id: str) -> list[dict[str, object]]:
+        """Return the family's training variants, best first (current-best then score)."""
+        async with self.database.connect() as conn:
+            rows = await conn.execute_fetchall(
+                "SELECT id AS variant_id, training_hash, owner_hotkey, submission_id, "
+                "q_recipe AS final_score, metric_mean, metric_std, is_current_best, created_at "
+                "FROM training_variants WHERE architecture_id=? "
+                "ORDER BY is_current_best DESC, q_recipe DESC, created_at ASC, id ASC",
+                (architecture_id,),
+            )
+        return [dict(row) for row in rows]
+
+    async def get_submission_curve(self, submission_id: str) -> dict[str, Any] | None:
+        """Return the persisted loss curve + reconciled compute + bpb scalars for a submission.
+
+        Reads the centralised ``submission_curves`` row (arrays / step0 / baseline / compute JSON)
+        and folds in the ``prequential_bpb`` / ``bits_per_byte`` / ``tokens_consumed`` scalars from
+        the ``scores.metrics`` JSON. Returns ``None`` when no curve row was persisted.
+        """
+        async with self.database.connect() as conn:
+            curve_rows = await conn.execute_fetchall(
+                "SELECT online_loss, covered_bytes_cumulative, step0_loss, baseline_nats, compute "
+                "FROM submission_curves WHERE submission_id=?",
+                (submission_id,),
+            )
+            curve_list = list(curve_rows)
+            if not curve_list:
+                return None
+            score_rows = await conn.execute_fetchall(
+                "SELECT metrics FROM scores WHERE submission_id=?",
+                (submission_id,),
+            )
+        curve = curve_list[0]
+        compute = loads(curve["compute"])
+        metrics = loads(list(score_rows)[0]["metrics"]) if score_rows else {}
+        metrics = metrics if isinstance(metrics, dict) else {}
+        return {
+            "submission_id": submission_id,
+            "online_loss": loads(curve["online_loss"]),
+            "covered_bytes_cumulative": loads(curve["covered_bytes_cumulative"]),
+            "step0_loss": curve["step0_loss"],
+            "baseline_nats": curve["baseline_nats"],
+            "compute": compute if isinstance(compute, dict) else {},
+            "prequential_bpb": metrics.get("prequential_bpb"),
+            "bits_per_byte": metrics.get("bits_per_byte"),
+            "tokens_consumed": metrics.get("tokens_consumed"),
+        }
+
+    async def get_architecture_report(self, architecture_id: str) -> dict[str, object] | None:
+        """Return the cached LLM auto-report row for an architecture, or ``None``."""
+        async with self.database.connect() as conn:
+            rows = await conn.execute_fetchall(
+                "SELECT architecture_id, content, model, source_submission_id, generated_at "
+                "FROM architecture_reports WHERE architecture_id=?",
+                (architecture_id,),
+            )
+        row_list = list(rows)
+        return dict(row_list[0]) if row_list else None
+
+    async def store_architecture_report(
+        self,
+        *,
+        architecture_id: str,
+        content: str,
+        model: str,
+        source_submission_id: str,
+        generated_at: str | None = None,
+    ) -> None:
+        """Upsert the cached auto-report keyed by ``architecture_id`` (source sub = cache key)."""
+        async with self.database.connect() as conn:
+            await conn.execute(
+                "INSERT OR REPLACE INTO architecture_reports("
+                "architecture_id, content, model, source_submission_id, generated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (architecture_id, content, model, source_submission_id, generated_at or now_iso()),
+            )
 
     async def store_runtime_config(
         self,

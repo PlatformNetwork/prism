@@ -16,7 +16,8 @@ SCHEMA = (
     "id INTEGER PRIMARY KEY, starts_at TEXT NOT NULL, ends_at TEXT NOT NULL, status TEXT NOT NULL);"
     "CREATE TABLE IF NOT EXISTS submissions ("
     "id TEXT PRIMARY KEY, hotkey TEXT NOT NULL, epoch_id INTEGER NOT NULL, filename TEXT NOT NULL,"
-    "code TEXT NOT NULL, code_hash TEXT NOT NULL, arch_hash TEXT, metadata TEXT NOT NULL,"
+    "code TEXT NOT NULL, code_hash TEXT NOT NULL, arch_hash TEXT, name TEXT, "
+    "metadata TEXT NOT NULL,"
     "status TEXT NOT NULL, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,"
     "claimed_at TEXT);"
     "CREATE INDEX IF NOT EXISTS idx_submissions_epoch ON submissions(epoch_id, status);"
@@ -29,6 +30,7 @@ SCHEMA = (
     "requested_gpu_count INTEGER NOT NULL DEFAULT 0, actual_gpu_count INTEGER NOT NULL DEFAULT 0,"
     "gpu_mode TEXT NOT NULL DEFAULT '', gpu_tier TEXT NOT NULL DEFAULT '',"
     "artifact_output_path TEXT, run_manifest_path TEXT,"
+    "started_at TEXT, ended_at TEXT,"
     "infra_retryable INTEGER NOT NULL DEFAULT 0);"
     "CREATE TABLE IF NOT EXISTS gpu_leases ("
     "id TEXT PRIMARY KEY, submission_id TEXT NOT NULL, job_id TEXT, target_id TEXT,"
@@ -92,7 +94,8 @@ SCHEMA = (
     "id TEXT PRIMARY KEY, family_hash TEXT NOT NULL UNIQUE, arch_fingerprint TEXT NOT NULL,"
     "behavior_fingerprint TEXT NOT NULL, owner_hotkey TEXT NOT NULL,"
     "owner_submission_id TEXT NOT NULL, canonical_submission_id TEXT NOT NULL,"
-    "q_arch_best REAL NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,"
+    "q_arch_best REAL NOT NULL, display_name TEXT, "
+    "created_at TEXT NOT NULL, updated_at TEXT NOT NULL,"
     "canonical_graph_hash TEXT NOT NULL DEFAULT '', canonical_graph_path TEXT,"
     "canonical_metadata_path TEXT, canonical_mermaid_path TEXT, canonical_version_id TEXT);"
     "CREATE INDEX IF NOT EXISTS idx_architecture_families_owner "
@@ -162,6 +165,13 @@ SCHEMA = (
     "created_at TEXT NOT NULL);"
     "CREATE INDEX IF NOT EXISTS idx_component_agent_reviews_submission "
     "ON component_agent_reviews(submission_id);"
+    "CREATE TABLE IF NOT EXISTS submission_curves ("
+    "submission_id TEXT PRIMARY KEY, online_loss TEXT NOT NULL,"
+    "covered_bytes_cumulative TEXT NOT NULL, step0_loss REAL, baseline_nats REAL,"
+    "compute TEXT NOT NULL, created_at TEXT NOT NULL);"
+    "CREATE TABLE IF NOT EXISTS architecture_reports ("
+    "architecture_id TEXT PRIMARY KEY, content TEXT, model TEXT,"
+    "source_submission_id TEXT, generated_at TEXT NOT NULL);"
     "CREATE TABLE IF NOT EXISTS runtime_config ("
     "id INTEGER PRIMARY KEY AUTOINCREMENT, config_key TEXT NOT NULL, value_json TEXT NOT NULL,"
     "schema_version INTEGER NOT NULL, updated_by TEXT NOT NULL, updated_at TEXT NOT NULL,"
@@ -211,7 +221,7 @@ async def _run_migrations(conn: aiosqlite.Connection) -> None:
     await _ensure_columns(
         conn,
         "submissions",
-        {"claimed_at": "TEXT"},
+        {"claimed_at": "TEXT", "name": "TEXT"},
     )
     await _ensure_columns(
         conn,
@@ -222,6 +232,7 @@ async def _run_migrations(conn: aiosqlite.Connection) -> None:
         conn,
         "architecture_families",
         {
+            "display_name": "TEXT",
             "canonical_graph_hash": "TEXT NOT NULL DEFAULT ''",
             "canonical_graph_path": "TEXT",
             "canonical_metadata_path": "TEXT",
@@ -277,8 +288,21 @@ async def _run_migrations(conn: aiosqlite.Connection) -> None:
             "gpu_tier": "TEXT NOT NULL DEFAULT ''",
             "artifact_output_path": "TEXT",
             "run_manifest_path": "TEXT",
+            "started_at": "TEXT",
+            "ended_at": "TEXT",
             "infra_retryable": "INTEGER NOT NULL DEFAULT 0",
         },
+    )
+    await conn.executescript(
+        "CREATE TABLE IF NOT EXISTS submission_curves ("
+        "submission_id TEXT PRIMARY KEY, online_loss TEXT NOT NULL,"
+        "covered_bytes_cumulative TEXT NOT NULL, step0_loss REAL, baseline_nats REAL,"
+        "compute TEXT NOT NULL, created_at TEXT NOT NULL);"
+    )
+    await conn.executescript(
+        "CREATE TABLE IF NOT EXISTS architecture_reports ("
+        "architecture_id TEXT PRIMARY KEY, content TEXT, model TEXT,"
+        "source_submission_id TEXT, generated_at TEXT NOT NULL);"
     )
     await conn.executescript(
         "CREATE TABLE IF NOT EXISTS gpu_leases ("

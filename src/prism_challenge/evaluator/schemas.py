@@ -46,6 +46,15 @@ class ComputeBlock(SchemaModel):
     # the challenge online-loss instrument), recorded so the cap can be shown to bind the scored
     # model, not just ``build_model`` in isolation (architecture.md 4.1, 6; VAL-CHEAT-022).
     model_params: int | None = Field(default=None, ge=0)
+    # Observability-only scientific compute telemetry, all NULLABLE so manifests that predate the
+    # instrumentation (or runs without a CUDA device) simply omit them. The runner measures
+    # ``peak_vram_bytes`` / ``peak_rss_bytes`` / ``wall_clock_seconds`` (rank-0, exact for scored
+    # ``nproc=1`` path); the host derives ``estimated_flops`` (6ND) during reconciliation. NONE of
+    # these are ever read by ``score_prequential_bpb`` (they never affect ``final_score``).
+    peak_vram_bytes: int | None = Field(default=None, ge=0)
+    peak_rss_bytes: int | None = Field(default=None, ge=0)
+    wall_clock_seconds: float | None = Field(default=None, ge=0.0)
+    estimated_flops: float | None = Field(default=None, ge=0.0)
 
 
 class ExecutionMode(StrEnum):

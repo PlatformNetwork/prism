@@ -131,4 +131,98 @@ class TrainingVariantResponse(BaseModel):
     updated_at: datetime
 
 
+class ArchitectureSummary(BaseModel):
+    rank: int
+    architecture_id: str
+    arch_hash: str
+    name: str | None
+    owner_hotkey: str
+    best_final_score: float
+    best_submission_id: str
+    variant_count: int
+    submission_count: int
+    updated_at: datetime
+
+
+class ArchitectureListResponse(BaseModel):
+    epoch_id: int
+    architectures: list[ArchitectureSummary]
+
+
+class ArchitectureDetailResponse(BaseModel):
+    architecture_id: str
+    arch_hash: str
+    name: str | None
+    owner_hotkey: str
+    best_final_score: float
+    best_submission_id: str
+    variant_count: int
+    submission_count: int
+    first_seen_at: datetime
+    updated_at: datetime
+
+
+class TrainingVariantEntry(BaseModel):
+    variant_id: str
+    training_hash: str
+    owner_hotkey: str
+    submission_id: str
+    final_score: float
+    metric_mean: float
+    metric_std: float
+    is_current_best: bool
+    created_at: datetime
+
+
+class ArchitectureVariantsResponse(BaseModel):
+    architecture_id: str
+    variants: list[TrainingVariantEntry]
+
+
+class LossCurveSeries(BaseModel):
+    online_loss: list[float]
+    covered_bytes_cumulative: list[float]
+    step0_loss: float | None
+    baseline_nats: float | None
+    points: int
+    downsampled: bool
+
+
+class CurveBpb(BaseModel):
+    prequential_bpb: float | None
+    bits_per_byte: float | None
+
+
+class CurveCompute(BaseModel):
+    gpu_count: int | None
+    device: str | None
+    gpu_tier: str | None
+    model_params: int | None
+    tokens_consumed: int | None
+    estimated_flops: float | None
+    wall_clock_seconds: float | None
+    gpu_hours: float | None
+    peak_vram_bytes: int | None
+    peak_rss_bytes: int | None
+
+
+class SubmissionCurveResponse(BaseModel):
+    submission_id: str
+    loss_curve: LossCurveSeries
+    bpb: CurveBpb
+    compute: CurveCompute
+
+
+class ArchitectureReport(BaseModel):
+    status: str
+    content: str | None
+    model: str | None
+    generated_at: datetime | None
+
+
+class ArchitectureReportResponse(BaseModel):
+    architecture_id: str
+    report: ArchitectureReport
+
+
 

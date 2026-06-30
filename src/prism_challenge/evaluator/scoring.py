@@ -161,6 +161,10 @@ def build_compute_block(
     device: str,
     max_gpu_count: int | None = None,
     model_params: int | None = None,
+    peak_vram_bytes: int | None = None,
+    peak_rss_bytes: int | None = None,
+    wall_clock_seconds: float | None = None,
+    estimated_flops: float | None = None,
 ) -> dict[str, Any]:
     """Build the typed, observability-only ``compute`` block for the v2 manifest.
 
@@ -179,6 +183,10 @@ def build_compute_block(
         device=device,
         max_gpu_count=max_gpu_count,
         model_params=model_params,
+        peak_vram_bytes=peak_vram_bytes,
+        peak_rss_bytes=peak_rss_bytes,
+        wall_clock_seconds=wall_clock_seconds,
+        estimated_flops=estimated_flops,
     )
     return block.model_dump(by_alias=True, exclude_none=True)
 
