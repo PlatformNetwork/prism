@@ -18,6 +18,15 @@ from prism_challenge.evaluator.gloo_functional import (
 # and a rank-0-only checkpoint/manifest writer. An advisory NCCL nproc=2 single-GPU launch is
 # exercised non-gating (VAL-GPU-009..015).
 
+# These multi-rank gloo collectives can deadlock if a collective hangs. They are quarantined behind
+# the `distributed_gloo` marker so CI excludes them from the publish-gating `test` job (they run in
+# a separate, non-gating job); a per-test timeout bounds any hang so it fails fast instead of
+# running to GitHub's ~6h job ceiling and silently stalling image publication.
+pytestmark = [
+    pytest.mark.distributed_gloo,
+    pytest.mark.timeout(300),
+]
+
 
 @pytest.fixture(scope="module")
 def gloo_ws2() -> GlooFunctionalResult:

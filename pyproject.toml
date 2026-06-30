@@ -26,6 +26,7 @@ dev = [
   "pytest>=8",
   "pytest-asyncio>=0.23",
   "pytest-cov>=5",
+  "pytest-timeout>=2.3",
   "ruff>=0.6",
   "mypy>=1.10",
   "bittensor>=9"
@@ -48,6 +49,9 @@ allow-direct-references = true
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+  "distributed_gloo: multi-rank gloo collective functional tests; quarantined from the publish-gating CI suite and run in a separate non-gating job with a per-test timeout so a collective hang never stalls image publish",
+]
 
 [tool.ruff]
 line-length = 100
