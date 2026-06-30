@@ -152,7 +152,10 @@ class PrismSettings(ChallengeSettings):
     llm_review_timeout_seconds: int = 60
     held_review_timeout_seconds: int = 86400
     llm_review_temperature: float = 0.0
-    llm_review_max_tokens: int = 512
+    # Must be large enough to hold the forced SubmitMermaid tool call on real (~14KB) prompts;
+    # 512 truncates it (finish_reason=length, empty tool_calls) -> the gate fails closed for every
+    # real submission. 4096 leaves ample headroom (~630 output tokens observed in production).
+    llm_review_max_tokens: int = 4096
     llm_review_max_retries: int = 1
     llm_review_max_source_chars: int = 200_000
     subnet_rules_json: str | None = None

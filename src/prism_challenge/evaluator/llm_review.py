@@ -176,7 +176,7 @@ class LlmReviewConfig:
     gateway_token_file: str | Path | None = None
     timeout_seconds: int = 60
     temperature: float = 0.0
-    max_tokens: int = 512
+    max_tokens: int = 4096
     max_retries: int = 1
     max_source_chars: int = 200_000
 
