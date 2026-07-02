@@ -53,12 +53,13 @@ jobs:
         run: pytest -m "not distributed_gloo" --cov=prism_challenge --cov-report=term-missing --cov-fail-under=80
 
   distributed-gloo-tests:
-    # Non-gating: NOT a dependency of docker-build/docker-publish, so a gloo collective hang can
-    # never block image publication. The per-test @pytest.mark.timeout(300) and this job's
-    # timeout-minutes bound any hang so it fails fast instead of burning a ~6h job.
+    # Non-gating by DEPENDENCY: NOT in docker-build/docker-publish `needs`, so this job can never
+    # block image publication regardless of its result. The per-test @pytest.mark.timeout(300) and
+    # this job's timeout-minutes bound any collective hang so it fails fast instead of burning a
+    # ~6h job. Deliberately NO `continue-on-error`: a genuine (non-hang) gloo regression now shows
+    # RED here instead of being masked green, while still never gating publish.
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
