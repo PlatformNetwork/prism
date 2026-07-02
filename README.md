@@ -47,7 +47,10 @@ the whole curve, single-checkpoint gaming fails.
 5. The master computes the prequential bits-per-byte score plus a held-out delta tie-breaker from the
    validator-reported online loss stream and trained state, using the secret held-out splits it
    alone holds.
-6. Scores rank on the leaderboard and convert into normalized, best-per-hotkey BASE weights.
+6. Scores rank on the leaderboard; prism's emission is then split two-tier between the owner of the
+   all-time best-scoring architecture (0.60) and the owner of the best training variant on that
+   architecture (0.40), renormalized into BASE weights (a non-positive top architecture burns
+   prism's share).
 
 ## The v2 System At A Glance
 
@@ -73,9 +76,10 @@ the whole curve, single-checkpoint gaming fails.
   `llm_review` fails closed when a gateway URL is configured but its scoped token is unresolvable.
 - **Single-node multi-GPU contract**: the miner's loop scales across 1-8 GPUs; the scored run uses
   `nproc=1` (one physical GPU); correctness is validated with static checks and a gloo multi-rank test.
-- **Dry-run weights**: the master computes best-per-hotkey scores from validator-reported results
-  and exposes them through the unchanged `get_weights` contract; prism itself never writes on-chain,
-  and chain submission runs dry-run/mock in tests.
+- **Two-tier dry-run weights**: the master computes scores from validator-reported results and
+  splits prism's emission between the all-time best architecture's owner (0.60) and that
+  architecture's best training-variant owner (0.40), exposed through the unchanged `get_weights`
+  contract; prism itself never writes on-chain, and chain submission runs dry-run/mock in tests.
 
 ---
 
@@ -120,7 +124,7 @@ flowchart LR
     Validator --> Reexec[Forced-Init Re-Execution]
     Reexec --> Heldout[Master Held-out Delta]
     Heldout --> Score[Prequential bpb + Tie-breaker]
-    Score --> Weights[Best-per-hotkey Weights]
+    Score --> Weights[Two-tier BASE Weights]
 ```
 
 ```mermaid
@@ -139,7 +143,7 @@ sequenceDiagram
     D-->>V: captured online loss stream + trained state
     V-->>Mst: report online loss stream + trained state
     Mst->>Mst: prequential bits-per-byte + held-out delta (secret val/test)
-    Mst->>Mst: best-per-hotkey weights via get_weights
+    Mst->>Mst: two-tier emission split via get_weights
 ```
 
 ---
